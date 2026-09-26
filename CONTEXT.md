@@ -81,8 +81,8 @@ How a fault is measured. Every fault has exactly one:
   reads its severity writes back off the bus archive and only records.
 
 `runner.Kind` is the code-level declaration of one: what it measures, how
-its payload is shaped, and — where the defaults do not fit — how it folds
-and plans.
+its payload is shaped, how far back the data it reads reaches, and — where
+the defaults do not fit — how it folds and plans.
 
 ## Subject
 
@@ -194,3 +194,20 @@ Publishes go out before the database writes: a failed run then repeats the
 same publish instead of losing it behind an already-updated database. The
 episode events are the one thing published *after* it, because the row is
 what gives an event its id and what says it is new.
+
+## Back-test
+
+What a **candidate** — a fault entry nobody has written down yet, or a
+declared one with a threshold moved — would have found in the last N weeks:
+its episodes, with the subject, the dates, the tier and the peak score in
+the fault's own unit. It is the number that makes a proposed fault
+reviewable, and zero and fifty are both grounds to say no.
+
+The candidate runs through the same schema, the same kind, the same
+measurement and the same fold a scheduled run does, over a window of whole
+weeks off the frontier — but nothing else: no reconciliation, no delivery,
+no write, and no stored episode read for its own name, so a candidate
+sharing a declared fault's name cannot inherit its rows. A candidate has no
+history to be rare against, so its severities are the ones any rule without
+history produces; what it is judged by is the peak score. It is a library
+entry point the bridge exposes as a tool, never a job.

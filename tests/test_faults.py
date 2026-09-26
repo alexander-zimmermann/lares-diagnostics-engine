@@ -26,6 +26,7 @@ from lares_diagnostics_engine.faults import (
     Roles,
     RoomRule,
     Target,
+    parse_entry,
 )
 
 # A minimal valid file: the tracer fault plus one drift fault, matching the
@@ -1468,3 +1469,54 @@ def test_a_non_boolean_explain_names_fault_and_field(tmp_path: Path) -> None:
     path = _write(tmp_path, _VOLUME.rstrip() + "\n    explain: sometimes\n")
     with pytest.raises(ValueError, match=r"'notification_volume'.*explain"):
         FaultList.load(path)
+
+
+# --- one entry on its own --------------------------------------------------
+
+_ENTRY = {
+    "name": "candidate_runtime",
+    "sentence": "Ein Gerät zieht länger Strom, als seine erlaubte Laufzeit zulässt.",
+    "unit": "× der erlaubten Laufzeit",
+    "kind": "duration",
+    "parameters": {"active_hour_fraction": 0.5},
+    "scope": {"dpt": "7.012", "include": "%.Trockner.Stromwert"},
+    "devices": {"KG.Hauswirtschaftsraum.K3-L1.Trockner": {"max_run_hours": 4}},
+    "target": {"per_device": True},
+}
+
+
+def test_one_entry_loads_on_its_own() -> None:
+    fault = parse_entry(_ENTRY)
+    assert fault.name == "candidate_runtime"
+    assert fault.kind is MeasurementKind.DURATION
+    assert fault.devices == (
+        DeviceLimit(match="KG.Hauswirtschaftsraum.K3-L1.Trockner", max_run_hours=4),
+    )
+    assert fault.explain is True
+
+
+def test_one_entry_fails_the_schema_rules_a_file_edit_fails() -> None:
+    with pytest.raises(ValueError, match=r"'candidate_runtime'.*active_hour_fraction"):
+        parse_entry({**_ENTRY, "parameters": {"max_run_hours": 4}})
+
+
+def test_one_entry_fails_the_cross_field_rules_a_file_edit_fails() -> None:
+    constancy = {
+        **_ENTRY,
+        "kind": "constancy",
+        "parameters": {"constant_hours": 48, "same_within": 0},
+    }
+    with pytest.raises(ValueError, match="only a duration fault declares per-device limits"):
+        parse_entry(constancy)
+
+
+def test_one_entry_error_says_it_came_from_a_candidate() -> None:
+    # Where a loaded entry's error names the file it was read from.
+    with pytest.raises(ValueError, match="candidate: fault 'candidate_runtime'"):
+        parse_entry({**_ENTRY, "devices": {}})
+
+
+def test_parsing_an_entry_leaves_the_caller_s_mapping_alone() -> None:
+    entry = {**_ENTRY}
+    parse_entry(entry)
+    assert entry == _ENTRY

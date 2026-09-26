@@ -2,6 +2,11 @@
 handed over as a mapping. The fault list and the site file are both read
 this way — the file lives in lares, the schema here — so a bad edit fails
 at load with an error naming the field, never at runtime in the cluster.
+
+The validation itself takes a mapping rather than a path, so a declaration
+that never was a file — a candidate fault entry handed in by an agent —
+goes through the same schema and the same wording as a line of the real
+file.
 """
 
 from __future__ import annotations
@@ -37,8 +42,21 @@ def load_declared(
     data: Any = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{path}: expected a mapping at the top level, got {type(data).__name__}")
+    return validate_declared(data, schema, describe, source=str(path))
+
+
+def validate_declared(
+    data: dict[str, Any],
+    schema: Path,
+    describe: Callable[[jsonschema.ValidationError, Any], str] = describe_field,
+    *,
+    source: str,
+) -> dict[str, Any]:
+    """`data` against the bundled `schema`; the first error is raised as a
+    `ValueError` worded by `describe` and prefixed with `source` — the file
+    it was read from, or what handed it in where there was no file."""
     validator = jsonschema.Draft202012Validator(json.loads(schema.read_text(encoding="utf-8")))
     error = jsonschema.exceptions.best_match(validator.iter_errors(data))
     if error is not None:
-        raise ValueError(f"{path}: {describe(error, data)}") from error
+        raise ValueError(f"{source}: {describe(error, data)}") from error
     return data

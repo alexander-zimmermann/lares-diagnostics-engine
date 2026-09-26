@@ -22,7 +22,6 @@ from lares_diagnostics_engine import (
     volume,
 )
 from lares_diagnostics_engine.config import Settings
-from lares_diagnostics_engine.detect_faults import _kind_for
 from lares_diagnostics_engine.episode_store import OpenEpisodeRow
 from lares_diagnostics_engine.episodes import (
     Episode,
@@ -37,6 +36,7 @@ from lares_diagnostics_engine.faults import (
     Target,
 )
 from lares_diagnostics_engine.groups import GroupPublish
+from lares_diagnostics_engine.kinds import kind_for
 from lares_diagnostics_engine.reconcile import Measured, Plan
 from lares_diagnostics_engine.runner import NatsPublisher, publish_subjects
 from lares_diagnostics_engine.silence import (
@@ -629,7 +629,7 @@ _SITE = Site(
 def test_a_named_expectation_picks_the_daily_yield_shape() -> None:
     # The one thing that decides which of the kind's two shapes runs — and
     # the shape measures the plant the site file declares.
-    kind = _kind_for(_deviation_fault(DeviationExpectation.FORECAST_SOLAR), _SITE)
+    kind = kind_for(_deviation_fault(DeviationExpectation.FORECAST_SOLAR), _SITE)
     assert kind is not None
     assert isinstance(kind.measure, partial)
     assert kind.measure.func is deviation.measure_yield
@@ -639,14 +639,14 @@ def test_a_named_expectation_picks_the_daily_yield_shape() -> None:
 
 
 def test_a_deviation_without_an_expectation_stays_the_room_shape() -> None:
-    kind = _kind_for(_deviation_fault(None), _SITE)
+    kind = kind_for(_deviation_fault(None), _SITE)
     assert kind is not None
     assert kind.measure is deviation.measure
     assert kind.policy.bucket == timedelta(hours=1)
 
 
 def test_the_silence_kind_stamps_with_its_own_fingerprint() -> None:
-    kind = _kind_for(
+    kind = kind_for(
         Fault(
             name="channel_silence",
             sentence="ein Kanal schweigt",
@@ -662,7 +662,7 @@ def test_the_silence_kind_stamps_with_its_own_fingerprint() -> None:
 
 
 def test_a_constancy_fault_runs_the_per_main_group_shape() -> None:
-    kind = _kind_for(
+    kind = kind_for(
         Fault(
             name="channel_constancy",
             sentence="ein Kanal liefert denselben Wert",

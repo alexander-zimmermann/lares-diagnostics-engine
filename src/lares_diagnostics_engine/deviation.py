@@ -463,6 +463,11 @@ DAY = timedelta(days=1)
 # worse news than the first, whatever the shortfall reads.
 YIELD_POLICY = EpisodePolicy(bucket=DAY, quiet_runs=1, promote_after_runs=3)
 
+# How far back this shape can be measured at all: the counters reach a year,
+# but the expectation it compares them against is a stored forecast, and
+# `mcp_forecasts` keeps 90 days. Past that there is nothing to be short of.
+YIELD_HISTORY = timedelta(days=90)
+
 # The one subject. The forecast models both roof planes in a single curve,
 # so there is nothing to fan out over; the plant's own anomaly address
 # carries it, and the writer rule pins the bare `fault.<fault>` subject

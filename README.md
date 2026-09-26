@@ -160,6 +160,48 @@ Not in this repo: verdicts (lares-mcp-bridge `set_episode_verdict` →
 dashboard, and the Basalte Studio faults — those appear here only as
 `external` entries.
 
+## Library surface
+
+Two entry points are imported from this package at its deployed git tag, the
+way the sidecars import `nats-bridge-core`. They and the back-test's two
+result types (`Backtest`, `BacktestEpisode`) are what the package root
+exports; everything else is internal.
+
+| Import | Who uses it | What it does |
+|--------|-------------|--------------|
+| `entity_slug` | the lares generator (`task knx:create-ga-mappings`) | The subject's last token as the publish dialect spells it (`2/1/27` → `2-1-27`, `EG.Flur` → `eg-flur`), so the writer rules are generated with the very function that publishes |
+| `backtest_fault` | lares-mcp-bridge, as the `backtest_fault` tool | What one candidate fault would have found in the last N weeks |
+
+### Back-testing a candidate
+
+```python
+from lares_diagnostics_engine import backtest_fault
+
+result = backtest_fault(read_connection, entry, weeks=8)
+```
+
+`entry` is one entry of the fault file in that schema — a candidate nobody
+has written down yet, or a copy of a declared fault with a threshold moved.
+Out comes the episodes that rule would have produced (subject, dates, tier,
+peak score in the fault's own unit, observation count), the window they were
+found in, and the measurement's own record — so no episodes reads as a
+verdict rather than as silence.
+
+It is a library call, not a job: no CronJob, no subcommand, no endpoint. The
+candidate runs through the same schema, the same kind registry, the same
+measurement and the same fold `detect-faults` runs, and it is read-only by
+construction — one read connection and no store or publisher end, so nothing
+in it can write a row or reach the bus.
+
+Anything unmeasurable is an error naming what to fix, never an empty result.
+The window is bounded by what the measurement can read, and each kind
+declares its own: a year of aggregates for most, 90 days for the plant's
+daily yield (as long as its stored forecast lives), 30 days for the
+duty-cycle signal (the one that reads the bus archive itself). Severities are
+the ones a rule without history produces, so what a candidate is judged by is
+the peak score — [backtest.py](src/lares_diagnostics_engine/backtest.py) says
+why, and what the single-pass window does and does not promise.
+
 ## Configuration
 
 All `MCP_*` env vars (kept for compatibility with the existing
@@ -184,5 +226,8 @@ measurement kind against invented fixtures (`test_silence`,
 `test_constancy`, `test_duration`, `test_drift`, `test_deviation`,
 `test_volume`, `test_external`), the episode pipeline (`test_episodes`,
 `test_severity`, `test_reconcile`), and the runner lifecycle through fake
-store and publisher ends (`test_runner`). Delivery is not tested here —
-the writer rules are tested in the bridge repo.
+store and publisher ends (`test_runner`). The back-test is driven through
+its own boundary — one candidate entry and a fake connection that hands each
+measurement its rows and refuses anything but a read (`test_backtest`).
+Delivery is not tested here — the writer rules are tested in the bridge
+repo.

@@ -67,6 +67,12 @@ log = get_logger(__name__)
 # started the comparison basis with.
 LOOKBACK = timedelta(days=30)
 
+# How far back the aggregates most kinds read can be trusted: the raw tables
+# keep a year (the retention policies in the lares bootstrap schema) and the
+# aggregates over them were materialized from that. They hold no retention
+# policy of their own and may reach further; nobody can promise it.
+HISTORY = timedelta(weeks=52)
+
 
 class Store(Protocol):
     """The store end: what the runner needs of episode persistence."""
@@ -249,6 +255,13 @@ class Kind[S, P: SubjectPublish]:
     notifies a second time. `fingerprint` is what the rows get stamped
     with — the declared rule, unless the kind's code is part of the rule
     and says so.
+
+    `history` is how far back the data this kind reads reaches: the
+    retention where the store prunes it, and the window a scheduled run
+    already reads where the kind reads the raw archive itself. A scheduled
+    run's `LOOKBACK` sits inside every one of them; a back-test asking for
+    more would read a shortened past and report fewer episodes than the
+    rule produced.
     """
 
     event: str
@@ -266,6 +279,7 @@ class Kind[S, P: SubjectPublish]:
     externally_delivered: bool = False
     policy: EpisodePolicy = EpisodePolicy()
     fingerprint: Callable[[Fault], str] = declared_fingerprint
+    history: timedelta = HISTORY
 
 
 def publish_subjects[P: SubjectPublish](
@@ -313,6 +327,43 @@ def publish_episode_events(
             raise
 
 
+def check_delivery(fault: Fault, kind: Kind[Any, Any]) -> None:
+    """That the fault declares the target form its kind delivers on. The
+    loader already forbids a target on a self-delivering fault; this is the
+    other side of the same contract, and it holds for a candidate nobody has
+    written down yet as much as for a loaded file's entry.
+    """
+    if kind.delivery is None:
+        if fault.target is not None:
+            raise ValueError(f"fault {fault.name}: {fault.kind} delivers itself, no target")
+    elif fault.target is None or fault.target.form != kind.delivery:
+        raise ValueError(
+            f"fault {fault.name}: {fault.kind} delivery needs a {kind.delivery} target"
+        )
+
+
+def fold_measured[S, P: SubjectPublish](
+    kind: Kind[S, P],
+    fault_name: str,
+    measured: Measured[S],
+    open_rows: Sequence[OpenEpisodeRow],
+    history_scores: Sequence[float],
+    frontier: datetime,
+) -> tuple[Episode, ...]:
+    """A measurement folded into episodes the way the kind declares: its own
+    fold where it has one (external folds severity writes), the pure
+    observation pipeline otherwise, in the kind's own cadence.
+
+    `frontier` is what decides which episodes are still open — never wall
+    time racing ahead of a stalled materialization.
+    """
+    if kind.fold is not None:
+        return kind.fold(fault_name=fault_name, measured=measured, open_rows=open_rows)
+    return fold_observations(
+        fault_name, measured.observations, history_scores, kind.policy, frontier
+    )
+
+
 def run_subjects[S, P: SubjectPublish](
     store: Store, publisher: Publisher, fault: Fault, kind: Kind[S, P], *, dry_run: bool
 ) -> None:
@@ -320,15 +371,7 @@ def run_subjects[S, P: SubjectPublish](
     the window off the aggregate, measure, fold, reconcile, log — then
     publish before writing.
     """
-    if kind.delivery is None:
-        # The loader already forbids a target on such a fault; this is the
-        # runner's side of the same contract.
-        if fault.target is not None:
-            raise ValueError(f"fault {fault.name}: {fault.kind} delivers itself, no target")
-    elif fault.target is None or fault.target.form != kind.delivery:
-        raise ValueError(
-            f"fault {fault.name}: {fault.kind} delivery needs a {kind.delivery} target"
-        )
+    check_delivery(fault, kind)
     policy = kind.policy
 
     with store.read() as conn:
@@ -348,15 +391,9 @@ def run_subjects[S, P: SubjectPublish](
             "subjects_dataless", fault=fault.name, subjects=sorted(measured.dataless)
         )
 
-    if kind.fold is not None:
-        episodes = kind.fold(fault_name=fault.name, measured=measured, open_rows=open_rows)
-    else:
-        # `now` is the frontier: episode ends are decided by aggregate
-        # progress, never by wall time racing ahead of a stalled
-        # materialization.
-        episodes = fold_observations(
-            fault.name, measured.observations, history_scores, policy, frontier
-        )
+    episodes = fold_measured(
+        kind, fault.name, measured, open_rows, history_scores, frontier
+    )
 
     plan = _plan_for(kind, episodes, open_rows, measured, frontier)
     fingerprint = kind.fingerprint(fault)

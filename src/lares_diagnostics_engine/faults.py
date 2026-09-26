@@ -20,7 +20,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from .declared import SCHEMAS, describe_field, load_declared
+from .declared import SCHEMAS, describe_field, load_declared, validate_declared
 
 if TYPE_CHECKING:
     import jsonschema
@@ -321,20 +321,41 @@ class FaultList:
             if name in seen:
                 raise ValueError(f"{path}: duplicate fault name {name!r}")
             seen.add(name)
-            problem = (
-                _check_external(raw)
-                or _check_volume(raw)
-                or _check_target(raw)
-                or _check_devices(raw)
-                or _check_references(raw)
-                or _check_signal(raw)
-                or _check_expectation(raw)
-                or _check_rooms(raw)
-            )
-            if problem is not None:
-                raise ValueError(f"{path}: {problem}")
-            faults.append(_parse_fault(raw))
+            faults.append(_checked_fault(raw, source=str(path)))
         return cls(faults)
+
+
+def parse_entry(entry: Mapping[str, Any]) -> Fault:
+    """One declared entry on its own — a line of the fault file, or a
+    candidate nobody has written down yet — validated against the same
+    bundled schema and frozen the same way a loaded file's entries are.
+
+    This is the door for a fault without a file: a back-tested candidate
+    fails here on exactly what a real edit would fail on, worded the same
+    way, with `candidate` where a loaded entry names its path.
+    """
+    data = validate_declared(
+        {"faults": [dict(entry)]}, _SCHEMA_PATH, _describe, source="candidate"
+    )
+    return _checked_fault(data["faults"][0], source="candidate")
+
+
+def _checked_fault(raw: dict[str, Any], *, source: str) -> Fault:
+    """One schema-valid entry through the cross-field rules the schema
+    cannot word well enough, then frozen."""
+    problem = (
+        _check_external(raw)
+        or _check_volume(raw)
+        or _check_target(raw)
+        or _check_devices(raw)
+        or _check_references(raw)
+        or _check_signal(raw)
+        or _check_expectation(raw)
+        or _check_rooms(raw)
+    )
+    if problem is not None:
+        raise ValueError(f"{source}: {problem}")
+    return _parse_fault(raw)
 
 
 def _describe(error: jsonschema.ValidationError, data: Any) -> str:

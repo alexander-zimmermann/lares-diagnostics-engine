@@ -90,6 +90,11 @@ class Device:
 # longer gap is the bridge missing, not a compressor running for hours, and
 # silence is its own fault.
 MAX_HOLD = BUCKET
+# How far back the duty-cycle signal can be measured: it reads the bus
+# archive itself rather than an aggregate, and this is what a scheduled run
+# reads of it every hour. A longer window would pull more raw telegrams than
+# anything in production does, on a database with a gigabyte of memory.
+ARCHIVE_HISTORY = timedelta(days=30)
 # An hour telegrams account for less than half of is a delivery gap, not a
 # reading.
 MIN_COVERAGE = 0.5
