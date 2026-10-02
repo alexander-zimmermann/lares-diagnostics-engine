@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from lares_diagnostics_engine.episodes import (
+    Entity,
     Episode,
     EpisodePolicy,
     EventKind,
@@ -236,3 +237,32 @@ def test_policy_rejects_nonsense() -> None:
 
 def test_no_observations_no_episodes() -> None:
     assert _fold([]) == ()
+
+
+def test_episode_carries_what_its_subject_names() -> None:
+    """The detector's word travels from the observation to the row, so a
+    reader never has to guess what a subject is."""
+    room = Entity(kind="room", ref="8/2/80")
+    episodes = fold_observations(
+        "fbh_cold",
+        [
+            Observation(subject="eg-buero", time=_T0, score=9.0, entity=room),
+            Observation(subject="eg-buero", time=_T0 + _HOUR, score=9.0, entity=room),
+        ],
+        _HISTORY,
+        EpisodePolicy(),
+        now=_T0 + 10 * _HOUR,
+    )
+    assert [e.entity for e in episodes] == [room]
+
+
+def test_an_episode_without_a_named_entity_keeps_none() -> None:
+    """A channel fault says nothing; the store reads its subject instead."""
+    episodes = fold_observations(
+        "channel_silence",
+        [Observation(subject="15/2/0", time=_T0, score=9.0)],
+        _HISTORY,
+        EpisodePolicy(),
+        now=_T0 + 10 * _HOUR,
+    )
+    assert episodes[0].entity is None

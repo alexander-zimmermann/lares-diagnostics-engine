@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from itertools import groupby
 from operator import attrgetter
+from typing import Literal
 
 from .severity import CLEAR, CRITICAL, INFO, WARNING
 
@@ -32,6 +33,21 @@ class EventKind(StrEnum):
     APPEARED = "appeared"
     ESCALATED = "escalated"
     ENDED = "ended"
+
+
+# What a subject names, for everyone who has to resolve it against the KNX
+# catalog. `ref` is the group address that resolves: the subject itself for
+# a channel, a channel that stands for the room or plant otherwise — never
+# the channel a room fault measured, which compares two of them.
+EntityKind = Literal["channel", "room", "plant"]
+
+
+@dataclass(frozen=True, slots=True)
+class Entity:
+    """What an observation's subject names, and the address that finds it."""
+
+    kind: EntityKind
+    ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +61,9 @@ class Observation:
     time: datetime
     score: float
     value: float | None = None
+    # Set by the kinds whose subject is not a group address; the rest leave
+    # it None and are read as the channel their subject names.
+    entity: Entity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +162,7 @@ class Episode:
     peak_score: float
     evidence: tuple[EvidenceRow, ...]
     events: tuple[NotificationEvent, ...]
+    entity: Entity | None = None
 
 
 def severity_cutoffs(
@@ -232,6 +252,7 @@ def _build_episode(
         events.append(NotificationEvent(EventKind.ENDED, ended_at, CLEAR))
 
     return Episode(
+        entity=run[0].entity,
         fault=fault,
         subject=subject,
         started_at=started_at,

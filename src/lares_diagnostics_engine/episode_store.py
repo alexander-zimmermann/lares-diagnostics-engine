@@ -15,6 +15,7 @@ announces it once, on the run that first saw it.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -22,7 +23,7 @@ from typing import TYPE_CHECKING
 import psycopg
 from psycopg.rows import DictRow
 
-from .episodes import Episode, EpisodeEvent, EventKind, NotificationEvent
+from .episodes import Entity, Episode, EpisodeEvent, EventKind, NotificationEvent
 from .severity import CLEAR
 
 if TYPE_CHECKING:
@@ -111,12 +112,15 @@ def apply(
     """
     recorded: list[EpisodeEvent] = []
     for episode in inserts:
+        entity = entity_of(episode)
         inserted = conn.execute(
             """
-            INSERT INTO episodes (fault, subject, started_at, last_seen_at,
+            INSERT INTO episodes (fault, subject, entity_kind, entity_ref,
+                                  started_at, last_seen_at,
                                   ended_at, severity, peak_score, fingerprint,
                                   externally_delivered)
-            VALUES (%(fault)s, %(subject)s, %(started_at)s, %(last_seen_at)s,
+            VALUES (%(fault)s, %(subject)s, %(entity_kind)s, %(entity_ref)s,
+                    %(started_at)s, %(last_seen_at)s,
                     %(ended_at)s, %(severity)s, %(peak_score)s, %(fingerprint)s,
                     %(externally_delivered)s)
             RETURNING id
@@ -124,6 +128,8 @@ def apply(
             {
                 "fault": fault_name,
                 "subject": episode.subject,
+                "entity_kind": entity.kind if entity else None,
+                "entity_ref": entity.ref if entity else None,
                 "started_at": episode.started_at,
                 "last_seen_at": episode.last_seen_at,
                 "ended_at": episode.ended_at,
@@ -180,6 +186,18 @@ def apply(
             (NotificationEvent(EventKind.ENDED, ended_at, CLEAR),),
         )
     return tuple(recorded)
+
+
+_GA = re.compile(r"^\d+/\d+/\d+$")
+
+
+def entity_of(episode: Episode) -> Entity | None:
+    """What the subject names: the detector's word, or the channel a group
+    address names. None where neither applies — a subject nothing claimed
+    stays unresolved rather than guessed."""
+    if episode.entity is not None:
+        return episode.entity
+    return Entity(kind="channel", ref=episode.subject) if _GA.match(episode.subject) else None
 
 
 def _write_evidence(

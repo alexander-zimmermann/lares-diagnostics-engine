@@ -81,7 +81,7 @@ from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Protocol
 
 from . import forecast_solar
-from .episodes import EpisodePolicy, Observation
+from .episodes import Entity, EpisodePolicy, Observation
 from .faults import DeviationExpectation, Roles
 from .logging_setup import get_logger
 from .reconcile import Measured, Window
@@ -323,6 +323,9 @@ def deviation_observations(
                     time=bucket.time,
                     score=bucket.gap / room.min_gap,
                     value=bucket.gap,
+                    # Measured on the room, not on a channel; the setpoint
+                    # address is one the catalog resolves to it.
+                    entity=Entity(kind="room", ref=room.reference_ga),
                 )
             )
     return observations
