@@ -312,7 +312,7 @@ wheels = [
 
 [[package]]
 name = "lares-diagnostics-engine"
-version = "1.41.0"
+version = "1.42.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

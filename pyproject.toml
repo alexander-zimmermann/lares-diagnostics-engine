@@ -1,6 +1,6 @@
 [project]
 name = "lares-diagnostics-engine"
-version = "1.41.0"
+version = "1.42.0"
 description = "TSDB-backed background jobs: external forecast pulls (Forecast.Solar, Open-Meteo), the daily energy balance, and the declared fault list — episodes and a severity 0–3 on KNX group addresses. Companion to lares-mcp-bridge — owns all writes to mcp_forecasts and the episode tables."
 readme = "README.md"
 license = "GPL-2.0-or-later"
