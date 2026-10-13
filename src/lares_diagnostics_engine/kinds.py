@@ -122,17 +122,19 @@ _KINDS: Mapping[MeasurementKind, Kind[Any, Any]] = {
 }
 
 
-def _daily_yield(site: Site) -> Kind[Any, Any]:
+def _daily_yield(fault: Fault, site: Site) -> Kind[Any, Any]:
     """The deviation kind's other shape: a fault that names an expectation
     measures the plant's whole-day yield against it, in daily buckets, on
     the plant's one declared address. The plant is what the site file
     declares — which inverters, and what each can make in an hour — so the
-    shape is built around the loaded site rather than declared once.
+    shape is built around the loaded site rather than declared once; and
+    the frontier reads the fault too, for the local hour it may declare
+    before which yesterday is not yet judged.
     """
     return Kind(
         event="daily_yield_run",
         delivery="ga",
-        frontier=deviation.yield_frontier,
+        frontier=partial(deviation.yield_frontier, fault=fault, site=site),
         measure=partial(deviation.measure_yield, site=site),
         publish_for=deviation.publish_for_plant,
         payload=deviation.payload_yield,
@@ -197,5 +199,5 @@ def kind_for(fault: Fault, site: Site | None) -> Kind[Any, Any] | None:
                 f"fault {fault.name}: measured against {fault.expectation} it is the plant's "
                 f"daily yield — that shape needs the site the plant stands on"
             )
-        return _daily_yield(site)
+        return _daily_yield(fault, site)
     return _KINDS.get(fault.kind)

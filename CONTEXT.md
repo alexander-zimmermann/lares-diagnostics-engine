@@ -157,7 +157,11 @@ under the current rule is a silence sliding out of view and stays open.
 
 The "now" a run is measured against: the newest bucket of the aggregate it
 reads, not the wall clock — for a kind that measures whole days, the newest
-*complete* one. The continuous aggregate materializes with an
+*complete* one, held back further where the fault declares a local hour
+(`judge_after_local_hour`): yesterday is then judged only once the
+aggregate's clock, read in the site's timezone, has passed that hour, so
+the verdict reaches the house in the morning rather than at the first run
+past UTC midnight. The continuous aggregate materializes with an
 end offset, so the newest visible bucket lags real time for every channel
 at once; the frontier cancels that lag. Episodes also *end* in frontier
 time, so a stalled refresh freezes the picture instead of clearing every

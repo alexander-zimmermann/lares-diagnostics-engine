@@ -629,12 +629,15 @@ _SITE = Site(
 def test_a_named_expectation_picks_the_daily_yield_shape() -> None:
     # The one thing that decides which of the kind's two shapes runs — and
     # the shape measures the plant the site file declares.
-    kind = kind_for(_deviation_fault(DeviationExpectation.FORECAST_SOLAR), _SITE)
+    fault = _deviation_fault(DeviationExpectation.FORECAST_SOLAR)
+    kind = kind_for(fault, _SITE)
     assert kind is not None
     assert isinstance(kind.measure, partial)
     assert kind.measure.func is deviation.measure_yield
     assert kind.measure.keywords == {"site": _SITE}
-    assert kind.frontier is deviation.yield_frontier
+    assert isinstance(kind.frontier, partial)
+    assert kind.frontier.func is deviation.yield_frontier
+    assert kind.frontier.keywords == {"fault": fault, "site": _SITE}
     assert kind.policy.bucket == deviation.DAY
 
 

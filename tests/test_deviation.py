@@ -12,6 +12,7 @@ cluster, no live database.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -31,6 +32,7 @@ from lares_diagnostics_engine.deviation import (
     credit_rises,
     daily_energy,
     daily_yield,
+    day_frontier,
     dead_value_gas,
     deviation_observations,
     inverter_yields,
@@ -611,6 +613,47 @@ class TestDailyYield:
         assert (yields[1].drops, yields[1].over_bound) == (2, 1)
         assert (yields[2].drops, yields[2].over_bound) == (0, 0)
         assert yields[2].kwh == pytest.approx({_day(1): 12.0})
+
+
+_BERLIN = ZoneInfo("Europe/Berlin")
+
+
+class TestDayFrontier:
+    # The aggregate's newest bucket is the engine's clock. 2026-10-13 is on
+    # summer time, so 04:00 UTC is 06:00 in Berlin; on 2026-12-01, winter
+    # time, 05:00 UTC is.
+
+    def test_without_an_hour_yesterday_is_judged_as_soon_as_it_is_complete(self) -> None:
+        newest = datetime(2026, 10, 13, 0, 0, tzinfo=UTC)
+        frontier = day_frontier(newest, timezone=_BERLIN, judge_after_local_hour=None)
+        assert frontier == datetime(2026, 10, 12, tzinfo=UTC)
+
+    def test_before_the_hour_yesterday_is_held_back(self) -> None:
+        newest = datetime(2026, 10, 13, 3, 0, tzinfo=UTC)  # 05:00 in Berlin
+        frontier = day_frontier(newest, timezone=_BERLIN, judge_after_local_hour=6)
+        assert frontier == datetime(2026, 10, 11, tzinfo=UTC)
+
+    def test_at_the_hour_yesterday_is_judged(self) -> None:
+        newest = datetime(2026, 10, 13, 4, 0, tzinfo=UTC)  # 06:00 in Berlin
+        frontier = day_frontier(newest, timezone=_BERLIN, judge_after_local_hour=6)
+        assert frontier == datetime(2026, 10, 12, tzinfo=UTC)
+
+    def test_the_hour_is_local_so_winter_time_moves_the_utc_moment(self) -> None:
+        before = day_frontier(
+            datetime(2026, 12, 1, 4, 0, tzinfo=UTC), timezone=_BERLIN, judge_after_local_hour=6
+        )
+        at = day_frontier(
+            datetime(2026, 12, 1, 5, 0, tzinfo=UTC), timezone=_BERLIN, judge_after_local_hour=6
+        )
+        assert before == datetime(2026, 11, 29, tzinfo=UTC)
+        assert at == datetime(2026, 11, 30, tzinfo=UTC)
+
+    def test_an_hour_inside_the_utc_day_never_hands_out_a_day_in_progress(self) -> None:
+        # 23:30 UTC on the 12th is already 01:30 on the 13th in Berlin, so an
+        # hour of 1 has passed locally — but the 12th is not closed.
+        newest = datetime(2026, 10, 12, 23, 30, tzinfo=UTC)
+        frontier = day_frontier(newest, timezone=_BERLIN, judge_after_local_hour=1)
+        assert frontier == datetime(2026, 10, 11, tzinfo=UTC)
 
 
 class TestJudgedDays:

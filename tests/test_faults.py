@@ -1242,6 +1242,25 @@ def test_expectation_fault_needs_its_floor(tmp_path: Path) -> None:
         FaultList.load(_write(tmp_path, body))
 
 
+def test_expectation_fault_may_hold_its_verdict_until_a_local_hour(tmp_path: Path) -> None:
+    # Optional: without it yesterday is judged as soon as it is complete.
+    body = _EXPECTATION.replace(
+        "      min_expected_kwh: 3\n",
+        "      min_expected_kwh: 3\n      judge_after_local_hour: 6\n",
+    )
+    [fault] = FaultList.load(_write(tmp_path, body))
+    assert fault.parameters["judge_after_local_hour"] == 6
+
+
+def test_a_local_hour_past_the_day_rejected(tmp_path: Path) -> None:
+    body = _EXPECTATION.replace(
+        "      min_expected_kwh: 3\n",
+        "      min_expected_kwh: 3\n      judge_after_local_hour: 24\n",
+    )
+    with pytest.raises(ValueError, match=r"'pv_underperformance'.*judge_after_local_hour"):
+        FaultList.load(_write(tmp_path, body))
+
+
 def test_expectation_fault_rejects_a_channel_scope(tmp_path: Path) -> None:
     # It measures against a model, so a catalog query here reads nothing.
     body = _EXPECTATION + """    scope:
