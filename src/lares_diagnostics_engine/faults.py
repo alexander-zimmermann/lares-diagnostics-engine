@@ -179,6 +179,22 @@ class DeviceReference:
 
     match: str
     healthy: float
+    ambient: AmbientReference | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AmbientReference:
+    """The room a duty-cycle reference follows: the temperature channel
+    around the device as a catalog-name LIKE pattern, the temperature the
+    healthy level was read at, and how many points of the day the level
+    moves per kelvin. A compressor buys the same cold with more running in
+    a warm room, so a reference that ignores the room calls every summer
+    ice; the slope is read off the data once, like the level itself.
+    """
+
+    channel: str
+    at_c: float
+    per_kelvin: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -572,8 +588,20 @@ def _parse_references(
         return ()
     field = _HEALTHY_FIELD[signal]
     return tuple(
-        DeviceReference(match=match, healthy=reference[field])
+        DeviceReference(
+            match=match,
+            healthy=reference[field],
+            ambient=_parse_ambient(reference.get("ambient")),
+        )
         for match, reference in raw.get("references", {}).items()
+    )
+
+
+def _parse_ambient(ambient: dict[str, Any] | None) -> AmbientReference | None:
+    if ambient is None:
+        return None
+    return AmbientReference(
+        channel=ambient["channel"], at_c=ambient["at_c"], per_kelvin=ambient["per_kelvin"]
     )
 
 

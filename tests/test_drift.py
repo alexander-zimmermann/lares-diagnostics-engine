@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from lares_diagnostics_engine.drift import (
+    Ambient,
     Device,
     DevicePublish,
     DeviceState,
@@ -29,6 +30,7 @@ from lares_diagnostics_engine.drift import (
     OnTime,
     accumulate,
     accumulate_fall,
+    ambient_levels,
     capability_levels,
     classify,
     classify_exchanger,
@@ -49,7 +51,7 @@ from lares_diagnostics_engine.episodes import (
     Observation,
     fold_observations,
 )
-from lares_diagnostics_engine.faults import DeviceReference, ExchangerRoles
+from lares_diagnostics_engine.faults import AmbientReference, DeviceReference, ExchangerRoles
 from lares_diagnostics_engine.silence import Channel
 
 _T0 = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
@@ -76,6 +78,17 @@ _DUTY_COVERAGE = min_window_samples(_DAY, 0.6)
 _FREEZER = Channel(
     ga="2/2/227", name="Schalten.EG.Küche.K15-L1.Gefrierschrank.Stromwert", dpt="7.012"
 )
+_KITCHEN = Channel(ga="8/2/151", name="Sensorik.EG.Küche.Sensor.Temperatur", dpt="9.001")
+# The freezer's reference as it follows the kitchen: 78 % of the day at
+# 21 °C, two points more per kelvin — read off two winter fortnights.
+_KITCHEN_REFERENCE = DeviceReference(
+    match="Küche.K15-L1.Gefrierschrank",
+    healthy=78,
+    ambient=AmbientReference(channel="%.Küche.Sensor.Temperatur", at_c=21, per_kelvin=2.0),
+)
+_KITCHEN_AMBIENT = Ambient(ga=_KITCHEN.ga, name=_KITCHEN.name, at_c=21, per_kelvin=2.0)
+_ROOM_RISE = 5.0
+_ROOM_BUDGET = 240.0
 _WASHER = Channel(
     ga="2/1/197", name="Schalten.KG.Hauswirtschaftsraum.K4-L1.Waschmaschine.Stromwert", dpt="7.012"
 )
@@ -283,6 +296,28 @@ class TestIcing:
         assert _duty(never_idle) == []
         assert self._observations([100] * 24 * 3) == []
 
+    def _room_observations(self, duty: Sequence[float], kitchen_c: float) -> list[Observation]:
+        levels = self._levels(duty)
+        healthy = {t: _KITCHEN_AMBIENT.healthy_at(78, kitchen_c) for t, _ in levels}
+        trace = accumulate(levels, healthy=healthy, rise=_ROOM_RISE)
+        return drift_observations(_FREEZER.ga, trace, rise=_ROOM_RISE, budget=_ROOM_BUDGET)
+
+    def test_a_hot_kitchen_is_not_ice(self) -> None:
+        # August as measured: 89 % of the day at 26.6 °C is what a healthy
+        # freezer does there — 78 at 21 °C plus two points per kelvin is
+        # 89.2 — so a reference that follows the room never accumulates.
+        assert self._room_observations([89] * 24 * 10, kitchen_c=26.6) == []
+
+    def test_the_same_running_in_a_cool_kitchen_is_ice(self) -> None:
+        # The same 89 % at 21 °C is 11 points past healthy, 6 of them past
+        # the rise: the 240 point-hour budget fills in 40 hours.
+        duty = [89] * 24 * 10
+        observations = self._room_observations(duty, kitchen_c=21.0)
+        assert observations
+        first_level, _ = self._levels(duty)[0]
+        assert observations[0].time == first_level + 40 * _HOUR
+        assert observations[0].value == pytest.approx(11.0)
+
     def test_the_episode_ends_after_a_defrost(self) -> None:
         # Iced for a week, defrosted, back to half the day: the episode must
         # close so the address clears.
@@ -294,6 +329,38 @@ class TestIcing:
         )
         assert len(episodes) == 1
         assert episodes[0].ended_at is not None
+
+
+class TestAmbientLevels:
+    def _hourly(self, values: Sequence[float | None]) -> dict[datetime, float]:
+        return {_T0 + n * _HOUR: v for n, v in enumerate(values) if v is not None}
+
+    def test_the_level_is_the_trailing_mean_of_the_room(self) -> None:
+        means = ambient_levels(
+            self._hourly([20, 22, 24]),
+            window_start=_T0,
+            frontier=_T0 + 2 * _HOUR,
+            window=2 * _HOUR,
+        )
+        assert means == {_T0: 20.0, _T0 + _HOUR: 21.0, _T0 + 2 * _HOUR: 23.0}
+
+    def test_a_silent_hour_carries_the_last_reading(self) -> None:
+        means = ambient_levels(
+            self._hourly([20, None, None]),
+            window_start=_T0,
+            frontier=_T0 + 2 * _HOUR,
+            window=_HOUR,
+        )
+        assert means == {_T0: 20.0, _T0 + _HOUR: 20.0, _T0 + 2 * _HOUR: 20.0}
+
+    def test_no_reference_before_the_room_has_spoken(self) -> None:
+        means = ambient_levels(
+            self._hourly([None, None, 20]),
+            window_start=_T0,
+            frontier=_T0 + 2 * _HOUR,
+            window=_HOUR,
+        )
+        assert means == {_T0 + 2 * _HOUR: 20.0}
 
 
 class TestMinWindowSamples:
@@ -336,6 +403,17 @@ class TestReachesFrontier:
 
 
 class TestAccumulate:
+    def test_a_reference_per_bucket_is_walked_bucket_by_bucket(self) -> None:
+        # The same 60 reads 10 high against a 50 and 10 low against a 70:
+        # each hour is compared with what healthy is there.
+        levels = _series([60, 60])
+        healthy = {levels[0][0]: 50.0, levels[1][0]: 70.0}
+        trace = accumulate(levels, healthy=healthy, rise=5.0)
+        assert [(s.healthy, s.excess, s.budget_used) for s in trace] == [
+            (50.0, 10.0, 5.0),
+            (70.0, -10.0, 0.0),
+        ]
+
     def test_a_healthy_device_never_accumulates(self) -> None:
         trace = accumulate(_floors([48, 49, 47, 48]), healthy=48, rise=_RISE)
         assert [a.budget_used for a in trace] == [0.0, 0.0, 0.0, 0.0]
@@ -433,14 +511,35 @@ class TestClassify:
         trace = accumulate(_floors([500] * 6), healthy=device.healthy, rise=_RISE)
         state = classify(device, trace, frontier=_T0 + 5 * _HOUR)
         assert state == DeviceState(
-            device=device, level=500.0, excess=452.0, rising_since=_T0
+            device=device, level=500.0, healthy=48.0, excess=452.0, rising_since=_T0
         )
 
     def test_a_healthy_device_names_only_its_standby(self) -> None:
         device = _device(_FREEZER, _REFERENCES[1])
         trace = accumulate(_floors([48] * 6), healthy=device.healthy, rise=_RISE)
         state = classify(device, trace, frontier=_T0 + 5 * _HOUR)
-        assert state == DeviceState(device=device, level=48.0, excess=0.0)
+        assert state == DeviceState(device=device, level=48.0, healthy=48.0, excess=0.0)
+
+    def test_a_room_following_device_names_the_room_and_healthy_there(self) -> None:
+        device = Device(
+            ga=_FREEZER.ga,
+            name=_FREEZER.name,
+            label="Gefrierschrank",
+            healthy=78,
+            ambient=_KITCHEN_AMBIENT,
+        )
+        room = {t: 26.0 for t, _ in _series([0] * 6)}
+        healthy = {t: _KITCHEN_AMBIENT.healthy_at(78, c) for t, c in room.items()}
+        trace = accumulate(_series([95] * 6), healthy=healthy, rise=_ROOM_RISE)
+        state = classify(device, trace, frontier=_T0 + 5 * _HOUR, room=room)
+        assert state == DeviceState(
+            device=device,
+            level=95.0,
+            healthy=88.0,
+            excess=7.0,
+            rising_since=_T0,
+            ambient_c=26.0,
+        )
 
     def test_a_series_short_of_the_frontier_leaves_the_state_empty(self) -> None:
         device = _device(_FREEZER, _REFERENCES[1])
@@ -464,11 +563,24 @@ class TestResolveDevices:
         with pytest.raises(ValueError, match=r"2/2/227.*no declared reference"):
             resolve_devices([_FREEZER, _WASHER], _REFERENCES[:1])
 
+    def test_a_reference_following_its_room_resolves_the_room_channel(self) -> None:
+        rooms = {"%.Küche.Sensor.Temperatur": [_KITCHEN]}
+        [device] = resolve_devices([_FREEZER], [_KITCHEN_REFERENCE], rooms)
+        assert device.ambient == _KITCHEN_AMBIENT
+        assert device.healthy == 78
+
+    def test_a_room_pattern_must_match_exactly_one_channel(self) -> None:
+        with pytest.raises(ValueError, match=r"Küche.Sensor.Temperatur.*no channel"):
+            resolve_devices([_FREEZER], [_KITCHEN_REFERENCE])
+        twice = {"%.Küche.Sensor.Temperatur": [_KITCHEN, _WASHER]}
+        with pytest.raises(ValueError, match=r"2 channels: 8/2/151, 2/1/197"):
+            resolve_devices([_FREEZER], [_KITCHEN_REFERENCE], twice)
+
 
 class TestPublishFor:
     def test_the_payload_names_the_device_and_its_numbers(self) -> None:
         device = _device(_FREEZER, _REFERENCES[1])
-        state = DeviceState(device, level=500.0, excess=452.0, rising_since=_T0)
+        state = DeviceState(device, level=500.0, healthy=48.0, excess=452.0, rising_since=_T0)
         publish = publish_for(_FREEZER.ga, 1, state)
         assert publish == DevicePublish(
             ga=_FREEZER.ga,

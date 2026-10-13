@@ -230,7 +230,18 @@
     "dutyCycleReferences": {
       "additionalProperties": {
         "properties": {
-          "healthy_duty_pct": { "type": "number", "minimum": 0, "maximum": 100 }
+          "healthy_duty_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+          "ambient": {
+            "$comment": "The reference follows the room: the temperature channel around the device, the temperature the level was read at, and the slope per kelvin.",
+            "type": "object",
+            "properties": {
+              "channel":    { "type": "string", "minLength": 1 },
+              "at_c":       { "type": "number" },
+              "per_kelvin": { "type": "number" }
+            },
+            "required": ["channel", "at_c", "per_kelvin"],
+            "additionalProperties": false
+          }
         },
         "required": ["healthy_duty_pct"],
         "additionalProperties": false

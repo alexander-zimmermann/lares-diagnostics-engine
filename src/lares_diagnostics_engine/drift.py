@@ -14,7 +14,10 @@ Three signals walk that same CUSUM, and the fault file says which:
   not a savings topic.
 * **duty_cycle** — the share of the day a compressor runs, in percent. An
   iced-up evaporator buys the same cold with far more running, months
-  before anything in the freezer thaws.
+  before anything in the freezer thaws. So does a warm room, which is why
+  this reference may **follow the room**: declared at one temperature with
+  a slope per kelvin, it is recomputed per bucket from the room's trailing
+  mean, and the walk is against what the device should read *there*.
 * **recovery** — the heat-recovery efficiency of an air exchanger, in
   percent of the extract–outdoor gradient. The one signal that walks
   *downward*: fouling lowers what the exchanger can do, so the deficit
@@ -52,20 +55,22 @@ of clearing episodes nobody fixed.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from math import ceil
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from .episodes import Observation
-from .faults import ExchangerRoles
+from .faults import ExchangerRoles, Scope
 from .reconcile import Measured, Window, measurement_reaches
 from .runs import split_runs
 from .silence import BUCKET, hourly_averages, like_match, pair_by_match, resolve_scope
 from .slug import entity_slug
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Sequence
 
     import psycopg
     from psycopg.rows import DictRow
@@ -76,14 +81,41 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
+class Ambient:
+    """The room a device's healthy level follows: the temperature channel
+    around it, the temperature the declared level was read at, and how many
+    points the level moves per kelvin."""
+
+    ga: str
+    name: str
+    at_c: float
+    per_kelvin: float
+
+    def healthy_at(self, healthy: float, temperature: float) -> float:
+        """What the device should read in a room at `temperature`, given
+        the level declared at `at_c`."""
+        return healthy + self.per_kelvin * (temperature - self.at_c)
+
+
+@dataclass(frozen=True, slots=True)
 class Device:
     """One monitored appliance: its Stromwert channel and the healthy level
-    declared for it, in the signal's own unit."""
+    declared for it, in the signal's own unit — pinned, or following the
+    room around it."""
 
     ga: str
     name: str
     label: str
     healthy: float
+    ambient: Ambient | None = None
+
+
+# A pinned healthy level, or one that follows the room: the level the walk
+# compares against at each bucket.
+Reference = float | Mapping[datetime, float]
+
+_NO_ROOMS: Mapping[str, Mapping[datetime, float]] = MappingProxyType({})
+_NO_CHANNELS: Mapping[str, Sequence[Channel]] = MappingProxyType({})
 
 
 # A telegram's value stands until the next one, but no longer than this: a
@@ -140,6 +172,7 @@ class Step:
 
     time: datetime
     level: float
+    healthy: float
     excess: float
     budget_used: float
     since: datetime | None = None
@@ -152,24 +185,54 @@ class DeviceState:
 
     device: Device
     level: float | None = None
+    healthy: float | None = None
     excess: float | None = None
     rising_since: datetime | None = None
+    ambient_c: float | None = None
 
 
 def resolve_devices(
-    channels: Sequence[Channel], references: Sequence[DeviceReference]
+    channels: Sequence[Channel],
+    references: Sequence[DeviceReference],
+    ambient_channels: Mapping[str, Sequence[Channel]] = _NO_CHANNELS,
 ) -> list[Device]:
     """The declared references married to the scoped channels — never a
-    silently unmeasured device."""
-    return [
-        Device(
-            ga=channel.ga,
-            name=channel.name,
-            label=reference.match,
-            healthy=reference.healthy,
+    silently unmeasured device. A reference that follows its room names
+    the room's temperature channel by pattern; `ambient_channels` is what
+    the catalog returned for each pattern, and exactly one channel must
+    have. Every problem is reported at once.
+    """
+    problems: list[str] = []
+    devices: list[Device] = []
+    for channel, reference in pair_by_match(channels, references, noun="reference"):
+        ambient = None
+        if reference.ambient is not None:
+            hits = ambient_channels.get(reference.ambient.channel, ())
+            if len(hits) != 1:
+                gas = ", ".join(c.ga for c in hits)
+                problems.append(
+                    f"ambient {reference.ambient.channel!r} of {reference.match!r} matches "
+                    + ("no channel" if not hits else f"{len(hits)} channels: {gas}")
+                )
+                continue
+            ambient = Ambient(
+                ga=hits[0].ga,
+                name=hits[0].name,
+                at_c=reference.ambient.at_c,
+                per_kelvin=reference.ambient.per_kelvin,
+            )
+        devices.append(
+            Device(
+                ga=channel.ga,
+                name=channel.name,
+                label=reference.match,
+                healthy=reference.healthy,
+                ambient=ambient,
+            )
         )
-        for channel, reference in pair_by_match(channels, references, noun="reference")
-    ]
+    if problems:
+        raise ValueError("ambient references do not resolve: " + "; ".join(problems))
+    return devices
 
 
 def min_window_samples(window: timedelta, fraction: float) -> int:
@@ -283,6 +346,49 @@ def duty_cycles(
     return levels
 
 
+def ambient_levels(
+    hourly: Mapping[datetime, float],
+    *,
+    window_start: datetime,
+    frontier: datetime,
+    window: timedelta,
+) -> dict[datetime, float]:
+    """The room's trailing mean at each bucket of the hourly grid, over the
+    same `window` the duty cycle is read over: a share of the day is
+    compared with the day's room, not with the hour's.
+
+    The channel's last hourly average is carried across silent buckets —
+    a room sensor is state, not samples — without a staleness bound, as
+    the recovery signal does with its air roles: a sensor dying mid-window
+    freezes the reference, and silence owns the dead channel. Before its
+    first value there is no reference at all, and those buckets measure
+    nothing.
+    """
+    carried: list[tuple[datetime, float]] = []
+    means: dict[datetime, float] = {}
+    last: float | None = None
+    first = 0
+    t = window_start
+    while t <= frontier:
+        value = hourly.get(t)
+        if value is not None:
+            last = value
+        if last is not None:
+            carried.append((t, last))
+            while carried[first][0] <= t - window:
+                first += 1
+            span = carried[first:]
+            means[t] = sum(v for _, v in span) / len(span)
+        t += BUCKET
+    return means
+
+
+def reference_at(healthy: Reference, time: datetime) -> float:
+    """The level a bucket is walked against: the pinned number, or what the
+    room-following reference reads at that bucket."""
+    return healthy[time] if isinstance(healthy, Mapping) else healthy
+
+
 def reaches_frontier(
     levels: Sequence[tuple[datetime, float]], *, frontier: datetime, max_gap: timedelta
 ) -> bool:
@@ -296,11 +402,13 @@ def reaches_frontier(
 
 
 def accumulate(
-    levels: Sequence[tuple[datetime, float]], *, healthy: float, rise: float
+    levels: Sequence[tuple[datetime, float]], *, healthy: Reference, rise: float
 ) -> list[Step]:
     """The CUSUM walk over the levels: `S = S + (excess - rise)` while the
     level sits more than `rise` above `healthy`, back to zero the moment it
-    returns into the band.
+    returns into the band. `healthy` is the pinned number, or — for a
+    reference that follows the room — the level per bucket, which the
+    caller has already restricted the levels to.
 
     Zeroing on return is what keeps an episode honest about the present: a
     plain CUSUM decays only at `rise` per hour, so a repaired device would
@@ -323,7 +431,8 @@ def accumulate(
     budget_used = 0.0
     since: datetime | None = None
     for time, level in levels:
-        excess = level - healthy
+        pinned = reference_at(healthy, time)
+        excess = level - pinned
         if excess <= rise:
             budget_used = 0.0
             since = None
@@ -334,6 +443,7 @@ def accumulate(
             Step(
                 time=time,
                 level=level,
+                healthy=pinned,
                 excess=excess,
                 budget_used=budget_used,
                 since=since,
@@ -357,9 +467,16 @@ def drift_observations(
     ]
 
 
-def classify(device: Device, trace: Sequence[Step], *, frontier: datetime) -> DeviceState:
+def classify(
+    device: Device,
+    trace: Sequence[Step],
+    *,
+    frontier: datetime,
+    room: Mapping[datetime, float] | None = None,
+) -> DeviceState:
     """What the device reads now — the payload's side of the severity. A
-    trace that does not reach the frontier says nothing about now.
+    trace that does not reach the frontier says nothing about now, not
+    even what healthy would be there.
 
     `rising_since` is bounded by the replay window: a drift older than the
     lookback reports the window's own start, which advances with it. The
@@ -371,8 +488,10 @@ def classify(device: Device, trace: Sequence[Step], *, frontier: datetime) -> De
     return DeviceState(
         device=device,
         level=last.level,
+        healthy=last.healthy,
         excess=last.excess,
         rising_since=last.since,
+        ambient_c=None if room is None else room[frontier],
     )
 
 
@@ -391,6 +510,7 @@ class DevicePublish:
     healthy: float | None
     excess: float | None
     rising_since: datetime | None
+    ambient_c: float | None = None
 
     @property
     def subject(self) -> str:
@@ -422,9 +542,10 @@ def publish_for(subject: str, severity: int, state: DeviceState | None) -> Devic
         device=state.device.label,
         name=state.device.name,
         level=state.level,
-        healthy=state.device.healthy,
+        healthy=state.healthy,
         excess=state.excess,
         rising_since=state.rising_since,
+        ambient_c=state.ambient_c,
     )
 
 
@@ -453,6 +574,7 @@ def payload_duty_cycle(publish: DevicePublish) -> dict[str, Any]:
         "duty_pct": publish.level,
         "healthy_pct": publish.healthy,
         "excess_pct": publish.excess,
+        "ambient_c": publish.ambient_c,
         "rising_since": publish.rising_since,
     }
 
@@ -546,8 +668,38 @@ def _trailing_window(fault: Fault, window: Window) -> tuple[timedelta, int]:
 
 def _devices(conn: psycopg.Connection[DictRow], fault: Fault) -> list[Device]:
     # A reference without a channel or a channel without a reference fails
-    # the run loudly — never a silently unmeasured device.
-    return resolve_devices(resolve_scope(conn, fault.channel_scope()), fault.references)
+    # the run loudly — never a silently unmeasured device. The same for a
+    # room a reference follows: its pattern is resolved where the catalog
+    # lives, like the scope.
+    patterns = sorted({r.ambient.channel for r in fault.references if r.ambient is not None})
+    ambient_channels = {p: resolve_scope(conn, Scope(include=(p,))) for p in patterns}
+    return resolve_devices(
+        resolve_scope(conn, fault.channel_scope()), fault.references, ambient_channels
+    )
+
+
+def _room_levels(
+    conn: psycopg.Connection[DictRow],
+    devices: Sequence[Device],
+    window: Window,
+    trailing: timedelta,
+) -> dict[str, dict[datetime, float]]:
+    """Each room-following device's room, read as the trailing mean the
+    duty cycle is read over. A room never heard from in the window leaves
+    the device without a reference, which is unmeasured, not healthy."""
+    rooms = {d.ga: d.ambient.ga for d in devices if d.ambient is not None}
+    if not rooms:
+        return {}
+    series = hourly_averages(conn, sorted(set(rooms.values())), window.start)
+    return {
+        ga: ambient_levels(
+            series.get(room, {}),
+            window_start=window.start,
+            frontier=window.frontier,
+            window=trailing,
+        )
+        for ga, room in rooms.items()
+    }
 
 
 def _walk(
@@ -558,20 +710,30 @@ def _walk(
     rise: float,
     budget: float,
     record: Mapping[str, Any],
+    rooms: Mapping[str, Mapping[datetime, float]] = _NO_ROOMS,
 ) -> Measured[DeviceState]:
     """The part both signals share: CUSUM walk, state and observations per
-    device, once the levels are read."""
+    device, once the levels are read. `rooms` carries, per device that
+    follows its room, the room's trailing mean at each bucket: the walk is
+    then against what the device should read there, and a bucket the room
+    has no reading for measures nothing."""
     states: dict[str, DeviceState] = {}
     observations: list[Observation] = []
     dataless: set[str] = set()
     for device in devices:
         series = levels.get(device.ga, ())
+        healthy: Reference = device.healthy
+        room: Mapping[datetime, float] | None = None
+        if device.ambient is not None:
+            room = rooms[device.ga]
+            healthy = {t: device.ambient.healthy_at(device.healthy, c) for t, c in room.items()}
+            series = [(t, v) for t, v in series if t in healthy]
         if not reaches_frontier(
             series, frontier=window.frontier, max_gap=window.policy.max_gap
         ):
             dataless.add(device.ga)
-        trace = accumulate(series, healthy=device.healthy, rise=rise)
-        states[device.ga] = classify(device, trace, frontier=window.frontier)
+        trace = accumulate(series, healthy=healthy, rise=rise)
+        states[device.ga] = classify(device, trace, frontier=window.frontier, room=room)
         observations.extend(drift_observations(device.ga, trace, rise=rise, budget=budget))
 
     return Measured(
@@ -649,6 +811,7 @@ def measure_duty_cycle(
         window=window,
         rise=float(fault.parameters["rise_pct"]),
         budget=float(fault.parameters["budget_pct_h"]),
+        rooms=_room_levels(conn, devices, window, trailing),
         # The hours cut out as door events — the run record says how much of
         # the window the fault deliberately did not look at. A device that
         # loses its whole window to them lands in `dataless`, where a
@@ -829,7 +992,7 @@ def accumulate_fall(
     holds here word for word, with "above" read as "below".
     """
     trace = accumulate([(t, -v) for t, v in levels], healthy=-healthy, rise=fall)
-    return [replace(step, level=-step.level) for step in trace]
+    return [replace(step, level=-step.level, healthy=-step.healthy) for step in trace]
 
 
 def classify_exchanger(
