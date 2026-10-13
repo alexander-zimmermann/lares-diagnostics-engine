@@ -192,7 +192,8 @@
                 "required": ["min_shortfall_pct", "min_expected_kwh"],
                 "properties": {
                   "min_shortfall_pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
-                  "min_expected_kwh":  { "type": "number", "exclusiveMinimum": 0 }
+                  "min_expected_kwh":  { "type": "number", "exclusiveMinimum": 0 },
+                  "judge_after_local_hour": { "type": "number", "minimum": 0, "exclusiveMaximum": 24 }
                 }
               }
             }

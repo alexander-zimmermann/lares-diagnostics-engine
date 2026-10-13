@@ -79,6 +79,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Protocol
+from zoneinfo import ZoneInfo
 
 from . import forecast_solar
 from .episodes import Entity, EpisodePolicy, Observation
@@ -535,18 +536,44 @@ class Expectation(Protocol):
     ) -> dict[datetime, float]: ...
 
 
-def yield_frontier(conn: psycopg.Connection[DictRow]) -> datetime | None:
-    """The newest *complete* day of the inverter aggregate — the 'now' a
-    daily-yield fault is measured against. Truncating the aggregate's own
-    frontier and stepping back one day is what makes "complete" decidable
-    without a clock: the engine speaks about yesterday and never about a
-    day still in progress.
+def yield_frontier(
+    conn: psycopg.Connection[DictRow], *, fault: Fault, site: Site
+) -> datetime | None:
+    """The 'now' a daily-yield fault is measured against: the newest UTC
+    day the plant may be judged on, read off the inverter aggregate's own
+    frontier rather than a clock — `day_frontier` says which day that is.
     """
-    row = conn.execute(
-        "SELECT time_bucket(INTERVAL '1 day', max(bucket)) - INTERVAL '1 day' AS frontier "
-        "FROM solaredge_inverter_1h"
-    ).fetchone()
-    return row["frontier"] if row else None
+    row = conn.execute("SELECT max(bucket) AS newest FROM solaredge_inverter_1h").fetchone()
+    newest = row["newest"] if row else None
+    if newest is None:
+        return None
+    return day_frontier(
+        newest,
+        timezone=ZoneInfo(site.timezone),
+        judge_after_local_hour=fault.parameters.get("judge_after_local_hour"),
+    )
+
+
+def day_frontier(
+    newest: datetime, *, timezone: ZoneInfo, judge_after_local_hour: float | None
+) -> datetime:
+    """The newest UTC day the plant may be judged on, given the newest
+    hourly bucket the aggregate holds. Complete comes first: the day that
+    bucket falls in is still in progress, so the day before it is the
+    newest complete one — decidable without a clock, the engine speaks
+    about yesterday and never about today. A declared local hour then holds
+    yesterday back until the aggregate's clock, read in the site's timezone,
+    has passed that hour of the following day: the verdict reaches the
+    house in the morning rather than at the first run past UTC midnight.
+    The earlier of the two days wins, so no hour can hand out a day the
+    aggregate has not closed.
+    """
+    complete = utc_day(newest) - DAY
+    if judge_after_local_hour is None:
+        return complete
+    local = newest.astimezone(timezone) - timedelta(hours=judge_after_local_hour)
+    passed = datetime(local.year, local.month, local.day, tzinfo=UTC) - DAY
+    return min(complete, passed)
 
 
 def hourly_closes(
