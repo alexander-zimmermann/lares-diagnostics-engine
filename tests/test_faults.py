@@ -15,6 +15,7 @@ import pytest
 
 from lares_diagnostics_engine.faults import (
     _SCHEMA_PATH,
+    AmbientReference,
     DeviationExpectation,
     DeviceLimit,
     DeviceReference,
@@ -906,6 +907,48 @@ def test_duty_cycle_drift_loads_its_reference_in_percent(tmp_path: Path) -> None
         DeviceReference(match="Küche.K15-L1.Gefrierschrank", healthy=50),
     )
     assert fault.parameters["door_run_hours"] == 3
+
+
+_ICING_IN_ITS_KITCHEN = _ICING.replace(
+    "        healthy_duty_pct: 50\n",
+    "        healthy_duty_pct: 78\n"
+    "        ambient:\n"
+    '          channel: "%.Küche.Sensor.Temperatur"\n'
+    "          at_c: 21\n"
+    "          per_kelvin: 2.0\n",
+)
+
+
+def test_a_duty_cycle_reference_may_follow_its_room(tmp_path: Path) -> None:
+    [fault] = FaultList.load(_write(tmp_path, _ICING_IN_ITS_KITCHEN))
+    assert fault.references == (
+        DeviceReference(
+            match="Küche.K15-L1.Gefrierschrank",
+            healthy=78,
+            ambient=AmbientReference(
+                channel="%.Küche.Sensor.Temperatur", at_c=21, per_kelvin=2.0
+            ),
+        ),
+    )
+
+
+def test_a_room_declares_its_channel_temperature_and_slope(tmp_path: Path) -> None:
+    body = _ICING_IN_ITS_KITCHEN.replace("          per_kelvin: 2.0\n", "")
+    with pytest.raises(ValueError, match=r"'freezer_icing'.*per_kelvin"):
+        FaultList.load(_write(tmp_path, body))
+
+
+def test_a_standby_reference_cannot_follow_a_room(tmp_path: Path) -> None:
+    body = _VALID.replace(
+        "        healthy_ma: 48\n",
+        "        healthy_ma: 48\n"
+        "        ambient:\n"
+        '          channel: "%.Küche.Sensor.Temperatur"\n'
+        "          at_c: 21\n"
+        "          per_kelvin: 2.0\n",
+    )
+    with pytest.raises(ValueError, match=r"ambient"):
+        FaultList.load(_write(tmp_path, body))
 
 
 def test_duty_cycle_drift_requires_its_parameters(tmp_path: Path) -> None:

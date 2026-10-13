@@ -69,7 +69,11 @@ How a fault is measured. Every fault has exactly one:
 - **drift** — something a device does sits persistently above (or, for
   recovery, below) the healthy level declared for it, walked as a CUSUM
   with a pinned reference. Which series it walks is the fault's declared
-  **signal**: `standby`, `duty_cycle` or `recovery`;
+  **signal**: `standby`, `duty_cycle` or `recovery`. A duty-cycle
+  reference may **follow the room**: it names the temperature channel
+  around the device, the temperature it was read at and its slope per
+  kelvin, and is recomputed per bucket from the room's trailing mean — a
+  freezer in a 27 °C kitchen is not iced for running 89 % of the day;
 - **deviation** — a value sits too far under its declared reference. Two
   shapes, told apart by what the fault declares that reference as: rooms
   against a channel of the house while a gate condition holds, or the
