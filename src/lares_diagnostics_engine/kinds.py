@@ -109,9 +109,10 @@ _KINDS: Mapping[MeasurementKind, Kind[Any, Any]] = {
     MeasurementKind.EXTERNAL: Kind(
         event="external_severities_run",
         # Basalte detects and delivers itself: the fault declares no
-        # target, the fold walks severity writes instead of observations,
-        # the plan keeps rows open until their explicit 0, and nothing
-        # is published — the engine only records.
+        # target, the fold walks severity writes read from the fault's
+        # cursor instead of observations, the plan keeps rows open until
+        # their explicit 0 and moves the cursor, and nothing is
+        # published — the engine only records.
         delivery=None,
         frontier=external.frontier,
         measure=external.measure,

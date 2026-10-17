@@ -16,10 +16,12 @@ from typing import Any
 from lares_diagnostics_engine.episode_store import OpenEpisodeRow
 from lares_diagnostics_engine.episodes import Episode, EventKind, NotificationEvent
 from lares_diagnostics_engine.external import (
+    SETTLE,
     SeverityWrite,
     drop_processed,
     fold_severity_writes,
     plan,
+    read_window,
 )
 from lares_diagnostics_engine.reconcile import Measured, Plan
 
@@ -46,17 +48,54 @@ def _plan(
     open_rows: Sequence[OpenEpisodeRow],
     in_scope: frozenset[str],
     now: datetime,
+    read_through: datetime | None = None,
 ) -> Plan[Any]:
     """The kind's plan hook, given the scope the measurement resolved —
-    `labels` names every address the catalog still holds."""
+    `labels` names every address the catalog still holds, `read_through`
+    how far the measurement read the archive."""
     measured: Measured[list[SeverityWrite]] = Measured(
         states={},
         observations=(),
         dataless=frozenset(),
         record={},
         labels=dict.fromkeys(in_scope, "declared"),
+        read_through=read_through,
     )
     return plan(episodes=episodes, open_rows=open_rows, measured=measured, frontier=now)
+
+
+# ------------------------------------------------------- the read cursor
+
+
+def test_the_first_run_reads_nothing_and_starts_the_record_at_its_frontier() -> None:
+    window = read_window(cursor=None, frontier=_at(10))
+
+    assert window.through == _at(10) - SETTLE
+    assert window.start == window.through
+
+
+def test_a_later_run_continues_where_the_cursor_stands() -> None:
+    window = read_window(cursor=_at(5), frontier=_at(10))
+
+    assert (window.start, window.through) == (_at(5), _at(10) - SETTLE)
+
+
+def test_the_plan_carries_the_read_through_for_the_apply_to_advance_the_cursor() -> None:
+    result = _plan(
+        episodes=[],
+        open_rows=[],
+        in_scope=frozenset({_GA}),
+        now=_at(10),
+        read_through=_at(10) - SETTLE,
+    )
+
+    assert result.read_through == _at(10) - SETTLE
+
+
+def test_a_plan_without_a_measured_read_through_moves_no_cursor() -> None:
+    result = _plan(episodes=[], open_rows=[], in_scope=frozenset({_GA}), now=_at(10))
+
+    assert result.read_through is None
 
 
 # ---------------------------------------------------------- fold: lifecycle

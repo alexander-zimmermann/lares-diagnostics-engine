@@ -82,7 +82,8 @@ How a fault is measured. Every fault has exactly one:
 - **volume** — more than N incidents in a week, measured over the engine's
   own episode stream;
 - **external** — Basalte detects and delivers the fault itself; the engine
-  reads its severity writes back off the bus archive and only records.
+  reads its severity writes back off the bus archive, from the fault's read
+  cursor, and only records.
 
 `runner.Kind` is the code-level declaration of one: what it measures, how
 its payload is shaped, how far back the data it reads reaches, and — where
@@ -109,9 +110,10 @@ against that fault's own history, never across faults.
 
 One incident: when it started, when it was last seen, how bad it got, with
 the per-bucket evidence rows that formed it and at most three
-**notification events** (appearing, escalating, ending). Episodes are the
-only stored artifact — everything else is recomputed from history on every
-run, so a redeploy cannot corrupt or lose state.
+**notification events** (appearing, escalating, ending). Episodes and the
+external faults' read cursors are the stored artifacts — everything else is
+recomputed from history on every run, so a redeploy cannot corrupt or lose
+state.
 
 ## Episode event
 
@@ -191,6 +193,27 @@ two channel-scoped kinds, silence and constancy, share the per-main-group
 form but not the addresses behind it — one per fault per group, because two
 writers on one address overwrite each other's clears. The address says
 which fault and roughly where, the payload names the channels exactly.
+
+## Read cursor
+
+Where an external fault's read of the bus archive stopped (`fault_cursors`,
+one row per fault). Every run reads from there up to the frontier less a
+settling margin (five minutes, the ingest pipeline's lag with room to
+spare) and moves the cursor in the transaction that writes what the read
+produced; a dry run leaves it alone. A fault without a cursor is on its
+first run: it reads nothing and its record starts there — the thirty days
+behind it are Basalte's, already delivered, and would only fold
+group-monitor tests and a rebuilt block's old writes into phantom episodes.
+This is the one stored state beside the episodes, kept on purpose: without
+it the engine did not know where it had stopped and read a month back
+every run. The measured kinds keep no cursor: they recompute their window
+from the aggregates on every run.
+
+Its limits, by design: a severity already standing on the bus when the
+fault is switched on is recorded from its next write; a row that reaches
+the archive later than the settling margin after its bus time is not read
+at all; setting a cursor back is a hand's `UPDATE` (the stored episodes keep
+the re-read from recording twice), deleting its row is a fresh start.
 
 ## Runner
 

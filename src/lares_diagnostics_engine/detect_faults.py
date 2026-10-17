@@ -23,9 +23,10 @@ Publishes go out before the database writes: a failed run then repeats the
 same publish (same value, Basalte's change detector ignores it) instead of
 losing it behind an already-updated database.
 
-State is recomputed from history on every run — the only stored artifacts
-are the episodes themselves. `--dry-run` computes and logs everything and
-touches neither the database nor NATS.
+State is recomputed from history on every run — the stored artifacts are
+the episodes themselves and, for an external fault, how far it has read
+the bus archive. `--dry-run` computes and logs everything and touches
+neither the database nor NATS.
 """
 
 from __future__ import annotations
