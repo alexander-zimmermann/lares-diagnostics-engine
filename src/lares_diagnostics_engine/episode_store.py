@@ -1,5 +1,6 @@
 """Episode persistence: the thin edge between the pure pipeline and the
-episodes tables.
+episodes tables — and the read cursors of the external faults, which move
+in the same transaction as the rows their read produced.
 
 Everything here is idempotent — evidence and events land with ON CONFLICT
 DO NOTHING on their natural keys, and the row updates only ever raise
@@ -62,8 +63,8 @@ def processed_through(
 ) -> dict[str, datetime]:
     """Per subject, how far this fault's recorded story reaches: the end of
     a closed episode, the last seen write of an open one. Bus-archive writes
-    up to that point are already folded — the replay guard for the sliding
-    read window.
+    up to that point are already folded — what keeps a read cursor set back
+    by hand from recording an incident twice.
     """
     rows = conn.execute(
         """
@@ -73,6 +74,35 @@ def processed_through(
         {"fault": fault_name},
     ).fetchall()
     return {r["subject"]: r["through"] for r in rows}
+
+
+def read_cursor(conn: psycopg.Connection[DictRow], fault_name: str) -> datetime | None:
+    """Where this fault's read of the bus archive stopped last time; None
+    for a fault that never ran — its record starts at the next run."""
+    row = conn.execute(
+        "SELECT read_through FROM fault_cursors WHERE fault = %(fault)s",
+        {"fault": fault_name},
+    ).fetchone()
+    return None if row is None else row["read_through"]
+
+
+def advance_cursor(
+    conn: psycopg.Connection[DictRow], fault_name: str, read_through: datetime
+) -> None:
+    """Move the fault's cursor to where this run read through — never back:
+    a run against an older frontier leaves a later position alone. Setting
+    it back is a hand's `UPDATE`; deleting the row is not a reset but a
+    fresh start, which skips everything up to the next run."""
+    conn.execute(
+        """
+        INSERT INTO fault_cursors (fault, read_through)
+        VALUES (%(fault)s, %(through)s)
+        ON CONFLICT (fault) DO UPDATE
+            SET read_through = GREATEST(fault_cursors.read_through, EXCLUDED.read_through),
+                updated_at = now()
+        """,
+        {"fault": fault_name, "through": read_through},
+    )
 
 
 def history_scores(conn: psycopg.Connection[DictRow], fault_name: str) -> list[float]:
@@ -98,13 +128,16 @@ def apply(
     *,
     fingerprint: str,
     externally_delivered: bool = False,
+    read_through: datetime | None = None,
 ) -> tuple[EpisodeEvent, ...]:
     """`fingerprint` names the rule this run measured by, stamped on every
     row it makes or re-makes — never on a row it merely closes — so a later
     rule can tell its own rows from this one's. `externally_delivered`
     marks episodes whose fault Basalte already delivered itself — the
     engine only records them, and nothing downstream may notify a second
-    time.
+    time. `read_through` is how far a cursor-driven read went: the cursor
+    moves there in this same transaction, so a failed write re-reads what
+    it failed on.
 
     What comes back are the episode events this call actually wrote, each
     with the id of the row it hangs under — the new ones, and nothing a
@@ -185,6 +218,8 @@ def apply(
             closed["subject"],
             (NotificationEvent(EventKind.ENDED, ended_at, CLEAR),),
         )
+    if read_through is not None:
+        advance_cursor(conn, fault_name, read_through)
     return tuple(recorded)
 
 

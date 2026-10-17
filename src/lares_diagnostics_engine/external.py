@@ -13,18 +13,30 @@ episodes are marked externally delivered so nothing downstream notifies a
 second time. Folding and reconciliation are pure; the SQL edge reads the
 declared addresses over the bus archive's own index.
 
-The read window slides, so replay safety comes from the episodes already
-stored: per subject, everything up to the recorded story's end (`ended_at`,
-or `last_seen_at` while open) is processed, and `drop_processed` keeps
-those writes away from the fold — no cursor state beyond the episodes
-themselves, which are recomputed context on every run.
+The engine keeps a read cursor per fault (`fault_cursors`): a run reads
+the archive from where the last one stopped up to the frontier less a
+settling margin, and the apply that writes the episodes moves the cursor
+there in the same transaction. A fault switched on has no cursor — its
+first run reads nothing and the record starts there, so the thirty days
+behind it (group-monitor tests, the writes of a block since rebuilt) never
+fold into phantom episodes. The stored episodes still guard the fold
+(`drop_processed`): a cursor set back by hand re-reads writes, and the
+ones already recorded stay recorded once.
+
+Two things the cursor does not do. A severity already standing on the bus
+when a fault is switched on is recorded from its next write, and its
+eventual 0 is dropped — nothing is open for it to end. And a row that
+reaches the archive later than the settling margin after its bus time —
+an ingest pipeline down for longer than that, replayed afterwards — sits
+behind a cursor that has moved past it; the 30-day window caught those on
+the next run, the cursor does not.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import groupby
 from operator import attrgetter
 from typing import TYPE_CHECKING, Any
@@ -45,6 +57,31 @@ if TYPE_CHECKING:
     from .reconcile import Window
 
 log = get_logger(__name__)
+
+# How long a telegram's row may lag behind its bus time before the engine
+# reads: the bridge, NATS and the ingest pipeline sit between, seconds in
+# normal operation. A run reads only up to the frontier less this margin,
+# so a row that lands within it is read by the next run; one that lands
+# later than this has slipped behind the cursor (see the module docstring).
+SETTLE = timedelta(minutes=5)
+
+
+@dataclass(frozen=True, slots=True)
+class ReadWindow:
+    """What one run reads off the archive: writes after `start` up to and
+    including `through`, the point the cursor moves to afterwards."""
+
+    start: datetime
+    through: datetime
+
+
+def read_window(cursor: datetime | None, frontier: datetime) -> ReadWindow:
+    """Where this run reads: from the cursor to the settled frontier — or,
+    on a fault's first run, nothing at all. The record starts where the
+    engine starts watching; Basalte already delivered what came before.
+    """
+    through = frontier - SETTLE
+    return ReadWindow(start=cursor if cursor is not None else through, through=through)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,16 +107,21 @@ def measure(
     _open_rows: Sequence[OpenEpisodeRow],
 ) -> Measured[list[SeverityWrite]]:
     """The kind's whole measurement: the declared addresses' severity writes
-    off the bus archive, minus everything the stored episodes have already
-    folded. What leaves per subject is its fresh writes — the fold's input,
-    not observations.
+    off the bus archive between the fault's read cursor and the settled
+    frontier, minus everything the stored episodes have already folded.
+    What leaves per subject is its fresh writes — the fold's input, not
+    observations. A fault without a cursor is on its first run: it reads
+    nothing, and the plan starts its record here. The runner's window is
+    the measured kinds' 30-day lookback; only its frontier is used here.
     """
     channels = resolve_scope(conn, fault.channel_scope())
     if not channels:
         # Address not in the catalog yet (ETS work pending) — or a typo.
         log.warning("external_no_subjects", fault=fault.name)
+    cursor = episode_store.read_cursor(conn, fault.name)
+    reading = read_window(cursor, window.frontier)
     processed = episode_store.processed_through(conn, fault.name)
-    writes = read_writes(conn, [c.ga for c in channels], window.start)
+    writes = read_writes(conn, [c.ga for c in channels], reading)
     fresh = drop_processed(writes, processed)
     by_subject: dict[str, list[SeverityWrite]] = {}
     for write in fresh:
@@ -92,10 +134,14 @@ def measure(
         dataless=frozenset(),
         record={
             "subjects": len(channels),
+            "first_run": cursor is None,
+            "read_from": reading.start.isoformat(),
+            "read_through": reading.through.isoformat(),
             "writes": len(writes),
             "fresh_writes": len(fresh),
         },
         labels={c.ga: c.name for c in channels},
+        read_through=reading.through,
     )
 
 
@@ -131,8 +177,8 @@ def drop_processed(
 ) -> list[SeverityWrite]:
     """Writes the stored episodes have not seen yet. Everything at or before
     a subject's processed-through time is already part of a recorded episode;
-    folding it again would re-insert closed incidents on every run of the
-    sliding window.
+    the cursor keeps a run from reading it twice, and this keeps a cursor
+    set back by hand from re-inserting the closed incidents it re-reads.
     """
     return [
         w
@@ -233,7 +279,9 @@ def plan(
     without writes stays open (`stale_opens`) — only the explicit 0 ends an
     external episode — unless its address no longer resolves in the
     catalog, which orphans the row at the frontier. Publishes nothing:
-    Basalte already delivered.
+    Basalte already delivered. The plan also carries how far the read went,
+    so the apply moves the fault's cursor there in the transaction that
+    writes what that read produced.
     """
     in_scope = frozenset(measured.labels)
     open_by_subject = {row.subject: row for row in open_rows}
@@ -268,15 +316,17 @@ def plan(
         orphan_closes=tuple(orphan_closes),
         stale_opens=tuple(still_open),
         publishes=(),
+        read_through=measured.read_through,
     )
 
 
 def read_writes(
-    conn: psycopg.Connection[DictRow], gas: Iterable[str], window_start: datetime
+    conn: psycopg.Connection[DictRow], gas: Iterable[str], reading: ReadWindow
 ) -> list[SeverityWrite]:
-    """The declared addresses' severity telegrams from the bus archive,
-    one indexed query per address — external faults have one or two. A
-    value off the 0-3 contract is logged and dropped, never folded.
+    """The declared addresses' severity telegrams from the bus archive
+    inside the read window, one indexed query per address — external
+    faults have one or two. A value off the 0-3 contract is logged and
+    dropped, never folded.
     """
     writes: list[SeverityWrite] = []
     for ga in gas:
@@ -285,10 +335,16 @@ def read_writes(
             """
             SELECT time, value FROM knx
             WHERE knx_main = %(main)s AND knx_middle = %(middle)s AND knx_sub = %(sub)s
-              AND time >= %(start)s
+              AND time > %(start)s AND time <= %(through)s
             ORDER BY time
             """,
-            {"main": main, "middle": middle, "sub": sub, "start": window_start},
+            {
+                "main": main,
+                "middle": middle,
+                "sub": sub,
+                "start": reading.start,
+                "through": reading.through,
+            },
         ).fetchall()
         for row in rows:
             severity = int(row["value"])

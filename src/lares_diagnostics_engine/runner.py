@@ -99,11 +99,13 @@ class Store(Protocol):
         *,
         fingerprint: str,
         externally_delivered: bool,
+        read_through: datetime | None,
     ) -> Sequence[EpisodeEvent]:
         """One plan's row changes, in one transaction; the rows it makes or
         re-makes stamped with the fingerprint of the rule the run measured
-        by. What comes back are the episode events the write recorded — the
-        new ones, with the ids their rows just got."""
+        by, and the fault's read cursor moved to `read_through` where the
+        kind reads from one. What comes back are the episode events the
+        write recorded — the new ones, with the ids their rows just got."""
         ...
 
 
@@ -153,6 +155,7 @@ class DbStore:
         *,
         fingerprint: str,
         externally_delivered: bool,
+        read_through: datetime | None,
     ) -> Sequence[EpisodeEvent]:
         with write_connection(self.settings) as conn, conn.transaction():
             return episode_store.apply(
@@ -163,6 +166,7 @@ class DbStore:
                 orphan_closes,
                 fingerprint=fingerprint,
                 externally_delivered=externally_delivered,
+                read_through=read_through,
             )
 
 
@@ -430,6 +434,7 @@ def run_subjects[S, P: SubjectPublish](
         plan.orphan_closes,
         fingerprint=fingerprint,
         externally_delivered=kind.externally_delivered,
+        read_through=plan.read_through,
     )
     publish_episode_events(publisher, fault, recorded)
 

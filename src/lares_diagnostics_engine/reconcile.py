@@ -118,8 +118,9 @@ class Measured[S]:
     """What a kind's measurement saw over its whole scope: the state per
     subject its payload is shaped from, the observations they produced, the
     subjects whose measurement did not reach the frontier, the fields its
-    run record names, what a human calls each subject — and the open rows
-    it disowns as another rule's, by subject, where the kind can tell.
+    run record names, what a human calls each subject, the open rows it
+    disowns as another rule's, by subject, where the kind can tell — and,
+    for a kind that reads from a cursor, how far this measurement read.
     """
 
     states: Mapping[str, S]
@@ -128,6 +129,7 @@ class Measured[S]:
     record: Mapping[str, Any]
     labels: Mapping[str, str] = _NO_LABELS
     stranded: frozenset[str] = frozenset()
+    read_through: datetime | None = None
 
 
 class SubjectPublish(Protocol):
@@ -149,8 +151,10 @@ class SubjectPublish(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class Plan[P]:
-    """What one run changes: the reconciled rows, and the publishes the
-    kind shaped out of the subjects whose severity moved.
+    """What one run changes: the reconciled rows, the publishes the kind
+    shaped out of the subjects whose severity moved, and — for a kind that
+    reads from a cursor — how far this run read, the point the cursor moves
+    to once the rows are written.
     """
 
     inserts: tuple[Episode, ...]
@@ -158,6 +162,7 @@ class Plan[P]:
     orphan_closes: tuple[tuple[int, datetime], ...]
     stale_opens: tuple[str, ...]
     publishes: tuple[P, ...]
+    read_through: datetime | None = None
 
 
 def plan_from[P](result: Reconciliation, publishes: Iterable[P]) -> Plan[P]:

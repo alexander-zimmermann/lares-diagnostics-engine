@@ -116,7 +116,7 @@ file the same way the fault list is validated.
 | `drift`      | CUSUM against a healthy reference pinned in the entry, never derived from history. `signal` picks the series: `standby` (mA), `duty_cycle` (%), `recovery` (%, the one that walks downward). | device, or one GA |
 | `deviation`  | A value sits too far under its reference: a room against its setpoint while a gate holds, or the plant's daily yield — the plausible rises of each declared inverter's counter between hourly closes, summed — against a named `expectation` (`forecast_solar`). | room, or one GA |
 | `volume`     | More than N episodes in seven days, over the engine's own episode stream. Declared last, so the count includes what this run just wrote. | one GA |
-| `external`   | Basalte detects and delivers itself; the engine reads the severity writes back off the bus archive and only records. Nothing is published. | — |
+| `external`   | Basalte detects and delivers itself; the engine reads the severity writes back off the bus archive, from a per-fault read cursor, and only records. Nothing is published. | — |
 
 There is no threshold kind: raw-value limits are Basalte's job.
 
@@ -134,10 +134,12 @@ by duration; there is no global ladder. A stored severity is never
 lowered.
 
 Episodes (`episodes`, `episode_observations`, `episode_events` in TSDB,
-written through the rw role) are the only stored state. Everything else
-is recomputed from the last 30 days on every run, so a redeploy cannot
-corrupt or lose it. Time is the aggregate's frontier — its newest
-bucket, not the wall clock — so a stalled refresh freezes the picture
+written through the rw role) and the read cursors of the external faults
+(`fault_cursors`: where each stopped reading the bus archive) are the only
+stored state. Everything else is recomputed from the last 30 days on
+every run, so a redeploy cannot corrupt or lose it. Time is the
+aggregate's frontier — its newest bucket, not the wall clock — so a
+stalled refresh freezes the picture
 instead of clearing every open episode. A subject the run cannot measure
 up to the frontier is dataless and its episode stays open. Every episode
 carries the fingerprint of the rule that last made it — the fault's kind
@@ -207,7 +209,7 @@ why, and what the single-pass window does and does not promise.
 All `MCP_*` env vars (kept for compatibility with the existing
 SealedSecret + Kyverno-clone topology shared with lares-mcp-bridge). Every
 job reads the site file at `MCP_SITE_FILE`; `detect-faults` additionally
-needs the write credentials (`MCP_DB_WRITE_*`, episodes only),
+needs the write credentials (`MCP_DB_WRITE_*`, episodes and `fault_cursors` only),
 `MCP_FAULTS_FILE` and a NATS identity for `fault.*`. See
 [config.py](src/lares_diagnostics_engine/config.py) for the full list.
 

@@ -10,7 +10,7 @@ no live database.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -54,6 +54,7 @@ class _Store:
         self.applied: _Applied | None = None
         self.fingerprint: str | None = None
         self.externally_delivered = False
+        self.read_through: datetime | None = None
 
     @contextmanager
     def read(self) -> Iterator[Any]:
@@ -75,11 +76,13 @@ class _Store:
         *,
         fingerprint: str,
         externally_delivered: bool,
+        read_through: datetime | None = None,
     ) -> tuple[EpisodeEvent, ...]:
         self.events.append("apply")
         self.applied = (tuple(inserts), tuple(updates), tuple(orphan_closes))
         self.fingerprint = fingerprint
         self.externally_delivered = externally_delivered
+        self.read_through = read_through
         return self._recorded
 
 
@@ -344,6 +347,41 @@ def test_a_self_delivering_kind_publishes_nothing_and_marks_its_rows() -> None:
     assert events == ["read", "apply"]
     assert publisher.published == []
     assert store.externally_delivered is True
+
+
+def test_a_plan_that_moves_the_read_cursor_hands_it_to_the_apply() -> None:
+    events: list[str] = []
+    store, publisher = _Store(events), _Publisher(events)
+    read_through = _FRONTIER - timedelta(minutes=5)
+
+    def cursor_plan(**_: Any) -> Plan[Any]:
+        return Plan(
+            inserts=(),
+            updates=(),
+            orphan_closes=(),
+            stale_opens=(),
+            publishes=(),
+            read_through=read_through,
+        )
+
+    kind = replace(
+        _self_delivering_kind(fold=_empty_fold, externally_delivered=True), plan=cursor_plan
+    )
+
+    run_subjects(store, publisher, _fault(target=None), kind, dry_run=False)
+
+    assert events == ["read", "apply"]
+    assert store.read_through == read_through
+
+
+def test_a_plan_without_a_cursor_leaves_the_store_cursor_alone() -> None:
+    events: list[str] = []
+    store, publisher = _Store(events), _Publisher(events)
+    kind = _self_delivering_kind(fold=_empty_fold, externally_delivered=True)
+
+    run_subjects(store, publisher, _fault(target=None), kind, dry_run=False)
+
+    assert store.read_through is None
 
 
 def test_a_self_delivering_kind_rejects_a_fault_declaring_a_target() -> None:
