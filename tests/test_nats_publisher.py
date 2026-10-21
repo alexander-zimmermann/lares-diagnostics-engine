@@ -1,6 +1,7 @@
 """The NATS adapter: one publish per fault, on the subject the
 knx-nats-bridge writer rules pin (`tests/test_slug` locks the entity token),
-and one pointer per episode event on `episode.<kind>`.
+and one pointer per episode event on `episode.<kind>`, each carrying the
+trace it was published in.
 """
 
 from __future__ import annotations
@@ -11,6 +12,10 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind
 
 from lares_diagnostics_engine import nats_publisher
 from lares_diagnostics_engine.config import Settings
@@ -21,6 +26,8 @@ from lares_diagnostics_engine.nats_publisher import (
     publish_anomaly,
     publish_episode_event,
 )
+
+_TRACER = trace.get_tracer(__name__)
 
 
 def _settings() -> Settings:
@@ -95,12 +102,14 @@ class _FakeClient:
     def __init__(self, refusal: Exception | None) -> None:
         self._refusal = refusal
         self.error_cb: Any = None
-        self.published: list[tuple[str, bytes]] = []
+        self.published: list[tuple[str, bytes, dict[str, str] | None]] = []
         self.flushed = False
         self.closed = False
 
-    async def publish(self, subject: str, body: bytes) -> None:
-        self.published.append((subject, body))
+    async def publish(
+        self, subject: str, body: bytes, headers: dict[str, str] | None = None
+    ) -> None:
+        self.published.append((subject, body, headers))
 
     async def flush(self, **_kwargs: Any) -> None:
         # The server answers the PUB's error before the PING's pong, so a
@@ -144,8 +153,67 @@ def test_an_accepted_publish_goes_out_and_the_connection_closes() -> None:
     connect, client = _with_bus(None)
     with patch.object(nats_publisher.nats, "connect", connect):
         publish(_settings(), "episode.appeared", {"episode_id": 15510})
-    ((subject, body),) = client.published
+    ((subject, body, _headers),) = client.published
     assert subject == "episode.appeared"
     assert json.loads(body) == {"episode_id": 15510}
     assert client.flushed is True
     assert client.closed is True
+
+
+def _producer(spans: InMemorySpanExporter) -> ReadableSpan:
+    (span,) = [s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER]
+    return span
+
+
+def _headers(client: _FakeClient) -> dict[str, str] | None:
+    ((_subject, _body, headers),) = client.published
+    return headers
+
+
+def _traceparent(span: ReadableSpan) -> str:
+    """The W3C header naming `span` as the parent of whatever handles the message."""
+    context = span.context
+    assert context is not None
+    return f"00-{context.trace_id:032x}-{context.span_id:016x}-{context.trace_flags:02x}"
+
+
+def test_an_episode_event_carries_the_trace_of_the_fault_that_opened_it(
+    spans: InMemorySpanExporter,
+) -> None:
+    # The trigger continues the run from these headers, so the explanation
+    # hangs under the hour's detect-faults trace and the fault that opened it.
+    event = EpisodeEvent(
+        episode_id=15510,
+        fault="appliance_runtime",
+        subject="2/1/197",
+        kind=EventKind.ESCALATED,
+        time=datetime(2026, 9, 25, 14, 20, tzinfo=UTC),
+        severity=3,
+    )
+    connect, client = _with_bus(None)
+    with (
+        patch.object(nats_publisher.nats, "connect", connect),
+        _TRACER.start_as_current_span("fault appliance_runtime") as fault_span,
+    ):
+        publish_episode_event(_settings(), event)
+    send_span = _producer(spans)
+    assert send_span.name == "send episode.escalated"
+    assert send_span.parent is not None
+    assert send_span.parent.span_id == fault_span.get_span_context().span_id
+    assert _headers(client) == {"traceparent": _traceparent(send_span)}
+
+
+def test_a_fault_severity_carries_the_trace_it_was_published_in(
+    spans: InMemorySpanExporter,
+) -> None:
+    connect, client = _with_bus(None)
+    with (
+        patch.object(nats_publisher.nats, "connect", connect),
+        _TRACER.start_as_current_span("fault appliance_runtime") as fault_span,
+    ):
+        publish_anomaly(_settings(), "appliance_runtime", "warning", {}, entity="2/1/197")
+    send_span = _producer(spans)
+    assert send_span.name == "send fault.appliance_runtime.2-1-197"
+    assert send_span.context is not None
+    assert send_span.context.trace_id == fault_span.get_span_context().trace_id
+    assert _headers(client) == {"traceparent": _traceparent(send_span)}

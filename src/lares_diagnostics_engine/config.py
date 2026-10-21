@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     nats_creds_file: str | None = None
     nats_nkey_seed_file: str | None = None
 
+    # Tracing: the OTLP/HTTP collector base URL (http://host:4318), unset keeps
+    # tracing off; the share of new traces kept, the platform's rendered ratio.
+    tracing_endpoint: str | None = None
+    tracing_sampling_ratio: float = Field(default=0.1, ge=0.0, le=1.0)
+
     # Forecast.Solar — PV-production forecast HTTPS API. Location and
     # planes come from the site file; the account's timezone must be the
     # site's, as the API returns naive local timestamps.

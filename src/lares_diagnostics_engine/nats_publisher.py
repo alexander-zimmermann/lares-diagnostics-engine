@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 import nats
+from nats_bridge_core import tracing
 
 from .config import Settings
 from .episodes import EpisodeEvent
@@ -53,7 +54,9 @@ def _connect_opts(settings: Settings) -> dict[str, Any]:
     return opts
 
 
-async def _publish_async(settings: Settings, subject: str, payload: dict[str, Any]) -> None:
+async def _publish_async(
+    settings: Settings, subject: str, payload: dict[str, Any], headers: dict[str, str]
+) -> None:
     """One message on one connection, and the refusal made observable.
 
     The flush is what turns an asynchronous `-ERR` into something this
@@ -72,7 +75,7 @@ async def _publish_async(settings: Settings, subject: str, payload: dict[str, An
     nc = await nats.connect(**_connect_opts(settings), error_cb=collect)
     try:
         body = json.dumps(payload, default=str).encode("utf-8")
-        await nc.publish(subject, body)
+        await nc.publish(subject, body, headers=headers or None)
         await nc.flush(timeout=5)
         if refusals:
             raise PublishRejectedError(f"{subject}: {refusals[0]}") from refusals[0]
@@ -84,8 +87,13 @@ async def _publish_async(settings: Settings, subject: str, payload: dict[str, An
 def publish(settings: Settings, subject: str, payload: dict[str, Any]) -> None:
     """Synchronous wrapper — a job invocation publishes a handful of
     messages (the moved subjects, and the episode events the run recorded),
-    so we open/close per call rather than wiring an event loop."""
-    asyncio.run(_publish_async(settings, subject, payload))
+    so we open/close per call rather than wiring an event loop.
+
+    Each publish is a producer span under whatever the job has open, with
+    its `traceparent` in the NATS headers for the consumer to continue.
+    """
+    with tracing.producer_span(subject):
+        asyncio.run(_publish_async(settings, subject, payload, tracing.outbound_headers()))
 
 
 def publish_anomaly(

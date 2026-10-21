@@ -35,6 +35,9 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
+
 from .config import Settings
 from .faults import Fault, FaultList
 from .kinds import kind_for
@@ -43,6 +46,7 @@ from .runner import DbStore, NatsPublisher, run_subjects
 from .site import Site
 
 log = get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 
 def run(settings: Settings, argv: Sequence[str]) -> int:
@@ -61,11 +65,15 @@ def run(settings: Settings, argv: Sequence[str]) -> int:
         # that leaves a device undeclared fails its own fault loudly, while
         # the rest of the list — the volume watchdog last of all — still
         # runs. The job still exits non-zero, so the CronJob shows it.
-        try:
-            _run_fault(settings, fault, site, dry_run=args.dry_run)
-        except Exception:
-            log.exception("fault_run_failed", fault=fault.name, kind=str(fault.kind))
-            failed.append(fault.name)
+        # The fault's span parents its publishes, episode events included.
+        with _tracer.start_as_current_span(f"fault {fault.name}") as span:
+            try:
+                _run_fault(settings, fault, site, dry_run=args.dry_run)
+            except Exception as exc:
+                log.exception("fault_run_failed", fault=fault.name, kind=str(fault.kind))
+                span.record_exception(exc)
+                span.set_status(StatusCode.ERROR)
+                failed.append(fault.name)
     if failed:
         log.error("detect_faults_incomplete", failed=failed)
         return 1

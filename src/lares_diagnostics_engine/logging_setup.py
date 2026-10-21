@@ -1,10 +1,28 @@
+"""structlog configuration — JSON or console rendering with contextvars merged in.
+
+A line written inside a sampled span carries its ``trace_id`` and ``span_id``,
+so Grafana goes from a trace to its lines and back.
+"""
+
 from __future__ import annotations
 
 import logging
 import sys
-from typing import Literal
+from collections.abc import MutableMapping
+from typing import Any, Literal
 
 import structlog
+from opentelemetry import trace
+
+
+def _trace_ids(
+    _logger: Any, _method: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    context = trace.get_current_span().get_span_context()
+    if context.is_valid and context.trace_flags.sampled:
+        event_dict["trace_id"] = f"{context.trace_id:032x}"
+        event_dict["span_id"] = f"{context.span_id:016x}"
+    return event_dict
 
 
 def configure_logging(level: str = "INFO", fmt: Literal["json", "console"] = "json") -> None:
@@ -21,6 +39,7 @@ def configure_logging(level: str = "INFO", fmt: Literal["json", "console"] = "js
 
     processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        _trace_ids,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
