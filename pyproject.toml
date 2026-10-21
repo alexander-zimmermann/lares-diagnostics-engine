@@ -4,7 +4,7 @@ version = "1.46.0"
 description = "TSDB-backed background jobs: external forecast pulls (Forecast.Solar, Open-Meteo), the daily energy balance, and the declared fault list — episodes and a severity 0–3 on KNX group addresses. Companion to lares-mcp-bridge — owns all writes to mcp_forecasts and the episode tables."
 readme = "README.md"
 license = "GPL-2.0-or-later"
-requires-python = ">=3.14.8"
+requires-python = ">=3.15.0"
 authors = [
     { name = "Alexander Zimmermann" },
 ]
@@ -12,7 +12,7 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Home Automation",
 ]
 dependencies = [
@@ -57,7 +57,7 @@ packages = ["src/lares_diagnostics_engine"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+target-version = "py315"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "ARG"]
@@ -66,7 +66,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "ARG"]
 "tests/**" = ["ARG001"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.15"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
