@@ -2,26 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
 from lares_diagnostics_engine.config import Settings
-
-
-@pytest.fixture
-def base_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    """Minimum required env so Settings() validates; tests then override as
-    needed. monkeypatch restores the original environment on teardown."""
-    for k in list(os.environ):
-        if k.startswith("MCP_"):
-            monkeypatch.delenv(k)
-    monkeypatch.setenv("MCP_DB_HOST", "localhost")
-    monkeypatch.setenv("MCP_DB_NAME", "test")
-    monkeypatch.setenv("MCP_DB_USERNAME", "ro")
-    monkeypatch.setenv("MCP_DB_PASSWORD", "ro-pw")
-    return monkeypatch
 
 
 def test_db_write_dsn_raises_when_unset(base_env: pytest.MonkeyPatch) -> None:

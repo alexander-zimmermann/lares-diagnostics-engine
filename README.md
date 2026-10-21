@@ -213,6 +213,12 @@ needs the write credentials (`MCP_DB_WRITE_*`, episodes and `fault_cursors` only
 `MCP_FAULTS_FILE` and a NATS identity for `fault.*`. See
 [config.py](src/lares_diagnostics_engine/config.py) for the full list.
 
+Tracing is on when `MCP_TRACING_ENDPOINT` names the OTLP/HTTP collector
+(`http://host:4318`); `MCP_TRACING_SAMPLING_RATIO` is the agent platform's
+rendered ratio. Each run is one trace, `detect-faults` holds one span per
+fault, and every publish carries its `traceparent` in the NATS headers, so
+lares-agent-trigger continues an episode's explanation in the same trace.
+
 ## Local dev
 
 ```
@@ -231,5 +237,8 @@ measurement kind against invented fixtures (`test_silence`,
 store and publisher ends (`test_runner`). The back-test is driven through
 its own boundary — one candidate entry and a fake connection that hands each
 measurement its rows and refuses anything but a read (`test_backtest`).
+Traces are read off an in-memory exporter: one root per CLI run with a span
+per fault (`test_subcommands`), and `traceparent` on every publish
+(`test_nats_publisher`).
 Delivery is not tested here — the writer rules are tested in the bridge
 repo.
