@@ -1,11 +1,15 @@
 # syntax=docker/dockerfile:1.28
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-RUN pip install --no-cache-dir uv
+# git: the nats-bridge-core dependency is a git tag, not a PyPI release.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir uv
 
 WORKDIR /build
 COPY pyproject.toml README.md LICENSE ./
@@ -15,7 +19,7 @@ RUN uv venv /opt/venv \
  && . /opt/venv/bin/activate \
  && uv pip install --no-cache "."
 
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \

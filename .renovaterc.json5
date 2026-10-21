@@ -3,27 +3,7 @@
   "extends": [
     "github>alexander-zimmermann/lares//.renovate/sidecarBase.json5",
     "github>alexander-zimmermann/lares//.renovate/sidecarPython.json5",
-  ],
-  "packageRules": [
-    {
-      // Pin Python at 3.13.x — statsforecast has no cp314 wheels.
-      "matchManagers": ["dockerfile", "pep621"],
-      "matchPackageNames": ["python"],
-      "matchUpdateTypes": ["major", "minor"],
-      "enabled": false,
-    },
-    {
-      // statsforecast 2.0.3 pins scipy<1.16, which caps numpy<2.5. Hold numpy
-      // below 2.5.0 until a statsforecast release relaxes the scipy bound.
-      "matchManagers": ["pep621"],
-      "matchPackageNames": ["numpy"],
-      "allowedVersions": "<2.5.0",
-    },
-    {
-      // statsforecast 2.1.x caps pandas<3.0.0; project needs pandas 3.x. Hold at 2.0.x.
-      "matchManagers": ["pep621"],
-      "matchPackageNames": ["statsforecast"],
-      "allowedVersions": "<2.1.0",
-    },
+    // Tracks the nats-bridge-core git tag in pyproject.toml.
+    "github>alexander-zimmermann/lares//.renovate/sidecarCoreDep.json5",
   ],
 }

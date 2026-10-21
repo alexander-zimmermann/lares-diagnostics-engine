@@ -4,7 +4,7 @@ version = "1.45.0"
 description = "TSDB-backed background jobs: external forecast pulls (Forecast.Solar, Open-Meteo), the daily energy balance, and the declared fault list — episodes and a severity 0–3 on KNX group addresses. Companion to lares-mcp-bridge — owns all writes to mcp_forecasts and the episode tables."
 readme = "README.md"
 license = "GPL-2.0-or-later"
-requires-python = ">=3.13"
+requires-python = ">=3.14.8"
 authors = [
     { name = "Alexander Zimmermann" },
 ]
@@ -12,7 +12,7 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Home Automation",
 ]
 dependencies = [
@@ -24,6 +24,9 @@ dependencies = [
     "structlog>=26.1.0",
     "httpx>=0.28.1",
     "nats-py[nkeys]>=2.16.0",
+    "nats-bridge-core @ git+https://github.com/alexander-zimmermann/nats-bridge-core@v0.9.0",
+    "opentelemetry-api>=1.45.0",
+    "opentelemetry-sdk>=1.45.0",
 ]
 
 [project.optional-dependencies]
@@ -45,12 +48,16 @@ lares-diagnostics-engine = "lares_diagnostics_engine.__main__:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+# nats-bridge-core is a git tag, not a PyPI release.
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/lares_diagnostics_engine"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "ARG"]
@@ -59,7 +66,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "ARG"]
 "tests/**" = ["ARG001"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
