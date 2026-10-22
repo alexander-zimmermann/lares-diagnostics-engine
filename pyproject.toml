@@ -4,7 +4,7 @@ version = "1.46.0"
 description = "TSDB-backed background jobs: external forecast pulls (Forecast.Solar, Open-Meteo), the daily energy balance, and the declared fault list — episodes and a severity 0–3 on KNX group addresses. Companion to lares-mcp-bridge — owns all writes to mcp_forecasts and the episode tables."
 readme = "README.md"
 license = "GPL-2.0-or-later"
-requires-python = ">=3.15.0"
+requires-python = ">=3.15.1"
 authors = [
     { name = "Alexander Zimmermann" },
 ]
