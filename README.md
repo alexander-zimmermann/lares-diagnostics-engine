@@ -1,7 +1,5 @@
 # lares-diagnostics-engine
 
-_Formerly `iot-insights-engine`._
-
 TSDB-backed background jobs for the homelab: external forecast pulls,
 the daily energy balance, and the declared fault list — history faults
 measured over the hourly aggregates and delivered as a severity 0–3 on a
