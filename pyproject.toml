@@ -4,7 +4,7 @@ version = "1.46.0"
 description = "TSDB-backed background jobs: external forecast pulls (Forecast.Solar, Open-Meteo), the daily energy balance, and the declared fault list — episodes and a severity 0–3 on KNX group addresses. Companion to lares-mcp-bridge — owns all writes to mcp_forecasts and the episode tables."
 readme = "README.md"
 license = "GPL-2.0-or-later"
-requires-python = ">=3.15.1"
+requires-python = ">=3.15.2"
 authors = [
     { name = "Alexander Zimmermann" },
 ]
@@ -18,24 +18,24 @@ classifiers = [
 dependencies = [
     "jsonschema>=4.26.0",
     "psycopg[binary,pool]>=3.3.6",
-    "pydantic>=2.14.1",
-    "pydantic-settings>=2.16.1",
+    "pydantic>=2.14.2",
+    "pydantic-settings>=2.16.2",
     "pyyaml>=6.0.3",
     "structlog>=26.1.0",
     "httpx>=0.28.1",
     "nats-py[nkeys]>=2.16.0",
     "nats-bridge-core @ git+https://github.com/alexander-zimmermann/nats-bridge-core@v0.9.0",
-    "opentelemetry-api>=1.45.1",
-    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-api>=1.45.2",
+    "opentelemetry-sdk>=1.45.2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
     "respx>=0.23.1",
-    "ruff>=0.17.2",
-    "mypy>=2.4.0",
+    "ruff>=0.17.3",
+    "mypy>=2.4.1",
     "types-jsonschema",
     "types-PyYAML",
     "pre-commit>=4.7.0",
