@@ -8,7 +8,7 @@ trailing reference would be worse than useless here — against a rolling
 window a linear ramp scores the same whatever its slope (#1593), which is
 why the z-score this replaces could never have seen a creeping standby.
 
-Three signals walk that same CUSUM, and the fault file says which:
+Four signals walk that same CUSUM, and the fault file says which:
 
 * **standby** — the device's idle draw in mA. A relay that no longer opens,
   not a savings topic.
@@ -22,6 +22,11 @@ Three signals walk that same CUSUM, and the fault file says which:
   percent of the extract–outdoor gradient. The one signal that walks
   *downward*: fouling lowers what the exchanger can do, so the deficit
   below healthy accumulates instead of the excess above it.
+* **unexplained_rain** — the share of the day a rain sensor reports rain
+  the weather does not know, in percent. A sensor whose heating died reads
+  every dewy night as rain; the hourly precipitation the weather job stores
+  says the sky was dry. Healthy is zero — a working sensor is wet only when
+  it rains — and the rise is what the model's misses are allowed.
 
 Three steps, each its own function:
 
@@ -62,11 +67,13 @@ from math import ceil
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from .episodes import Observation
+from . import forecast_weather
+from .episodes import EpisodePolicy, Observation
 from .faults import ExchangerRoles, Scope
 from .reconcile import Measured, Window, measurement_reaches
 from .runs import split_runs
 from .silence import BUCKET, hourly_averages, like_match, pair_by_match, resolve_scope
+from .silence import frontier as channel_frontier
 from .slug import entity_slug
 
 if TYPE_CHECKING:
@@ -712,11 +719,11 @@ def _walk(
     record: Mapping[str, Any],
     rooms: Mapping[str, Mapping[datetime, float]] = _NO_ROOMS,
 ) -> Measured[DeviceState]:
-    """The part both signals share: CUSUM walk, state and observations per
-    device, once the levels are read. `rooms` carries, per device that
-    follows its room, the room's trailing mean at each bucket: the walk is
-    then against what the device should read there, and a bucket the room
-    has no reading for measures nothing."""
+    """The part the device signals share: CUSUM walk, state and
+    observations per device, once the levels are read. `rooms` carries, per
+    device that follows its room, the room's trailing mean at each bucket:
+    the walk is then against what the device should read there, and a
+    bucket the room has no reading for measures nothing."""
     states: dict[str, DeviceState] = {}
     observations: list[Observation] = []
     dataless: set[str] = set()
@@ -1131,4 +1138,215 @@ def measure_recovery(
             "falling": int(state.deficit is not None and state.deficit > fall),
         },
         labels={exchanger.slug: exchanger.label},
+    )
+
+
+# Open-Meteo stamps an hour's precipitation at the hour's end — the value at
+# 10:00 is what fell from 09:00 to 10:00 — while the aggregate stamps its
+# bucket at the start, so the bucket at 09:00 is the weather's 10:00.
+WEATHER_STAMP = BUCKET
+
+# Dew only forms on a clear, calm night: a cloudy or windy spell keeps even
+# a dead heater's sensor dry for days, and the walk starts over each time.
+# So a quiet spell ends the incident only after four days — the longest the
+# broken station of autumn 2026 went without dew was 93 hours. The price is
+# that a repaired sensor clears its address four days after the repair.
+RAIN_POLICY = EpisodePolicy(quiet_runs=96)
+
+# How far back the weather reaches: `mcp_forecasts` keeps 90 days.
+WEATHER_HISTORY = timedelta(days=90)
+
+
+def rain_frontier(conn: psycopg.Connection[DictRow]) -> datetime | None:
+    """The 'now' the rain signal is measured against: the channel
+    aggregate's frontier, held back to the hour the weather job last wrote.
+
+    The weather is a second clock. Every other signal reads the source its
+    frontier comes from, so a stalled source freezes the picture; here a
+    forecast job that stopped would leave the channels running on, the
+    hours behind them unjudgeable, and an open episode would end after the
+    quiet days on nothing but missing weather.
+    """
+    row = conn.execute(
+        """
+        SELECT max(created_at) AS written FROM mcp_forecasts
+        WHERE source = %(source)s AND metric = %(metric)s AND model = %(model)s
+        """,
+        {
+            "source": forecast_weather.SOURCE,
+            "metric": forecast_weather.METRIC_MAP["precipitation"],
+            "model": forecast_weather.MODEL,
+        },
+    ).fetchone()
+    return held_back(channel_frontier(conn), row["written"] if row else None)
+
+
+def held_back(channels: datetime | None, written: datetime | None) -> datetime | None:
+    """The older of the two clocks on the hourly grid: the weather's last
+    write counts from the start of its hour. Either one missing means there
+    is nothing to measure against."""
+    if channels is None or written is None:
+        return None
+    return min(channels, written.replace(minute=0, second=0, microsecond=0))
+
+
+def weather_precipitation(
+    conn: psycopg.Connection[DictRow], since: datetime
+) -> dict[datetime, float]:
+    """The stored hourly precipitation since `since`, in mm, keyed by the
+    hour the weather stamps it with. Each row is the last forecast written
+    for that hour, and the job pulls hourly, so a past hour carries what the
+    model said of it with under an hour to go.
+    """
+    rows = conn.execute(
+        """
+        SELECT forecast_for, forecast_value FROM mcp_forecasts
+        WHERE source = %(source)s AND metric = %(metric)s AND model = %(model)s
+          AND forecast_for >= %(start)s AND forecast_value IS NOT NULL
+        ORDER BY forecast_for
+        """,
+        {
+            # The identity of these rows belongs to the job that writes
+            # them; naming it here again would let a rename pass silently.
+            "source": forecast_weather.SOURCE,
+            "metric": forecast_weather.METRIC_MAP["precipitation"],
+            "model": forecast_weather.MODEL,
+            "start": since,
+        },
+    ).fetchall()
+    return {row["forecast_for"]: float(row["forecast_value"]) for row in rows}
+
+
+def rain_hours(
+    wet: Mapping[datetime, float],
+    precipitation: Mapping[datetime, float],
+    *,
+    window_start: datetime,
+    frontier: datetime,
+    wet_fraction: float,
+    margin: int,
+) -> list[tuple[datetime, bool]]:
+    """Each measured hour of the grid, and whether the sensor reported rain
+    in it that the weather does not know.
+
+    An hour is measured when the sensor sent in it and the weather is known
+    for it and for `margin` hours either side. It is unexplained when the
+    sensor read wet for at least `wet_fraction` of it while the weather
+    shows no precipitation anywhere in that span: the margin forgives the
+    model's timing, a shower an hour early is the same shower. An hour the
+    weather does not cover measures nothing — a forecast job that stopped
+    must neither read as a dry sky nor clear a standing fault.
+
+    The sensor's share is the aggregate's average, a share of telegrams:
+    it reads as a share of time because the weather station repeats its
+    rain state every minute.
+    """
+    hours: list[tuple[datetime, bool]] = []
+    t = window_start
+    while t <= frontier:
+        reading = wet.get(t)
+        span = [t + WEATHER_STAMP + k * BUCKET for k in range(-margin, margin + 1)]
+        known = [precipitation[h] for h in span if h in precipitation]
+        if reading is not None and len(known) == len(span):
+            hours.append((t, reading >= wet_fraction and max(known) <= 0))
+        t += BUCKET
+    return hours
+
+
+def unexplained_shares(
+    hours: Sequence[tuple[datetime, bool]],
+    *,
+    window_start: datetime,
+    frontier: datetime,
+    window: timedelta,
+    min_samples: int,
+) -> list[tuple[datetime, float]]:
+    """The share of the trailing `window`'s measured hours that carried
+    rain the weather does not know, in percent.
+
+    The level is read *at* every bucket of the hourly grid but only *from*
+    measured hours, like the exchanger's capability, so an hour the
+    forecast job missed does not split one standing fault into an episode
+    per day. A window carrying fewer than `min_samples` measured hours
+    yields nothing at all.
+    """
+    levels: list[tuple[datetime, float]] = []
+    first, past = 0, 0
+    t = window_start
+    while t <= frontier:
+        while past < len(hours) and hours[past][0] <= t:
+            past += 1
+        while first < past and hours[first][0] <= t - window:
+            first += 1
+        span = hours[first:past]
+        if len(span) >= min_samples:
+            levels.append((t, 100.0 * sum(1 for _, unexplained in span if unexplained) / len(span)))
+        t += BUCKET
+    return levels
+
+
+def payload_unexplained_rain(publish: DevicePublish) -> dict[str, Any]:
+    """What the unexplained-rain signal says on the bus: how much of the
+    day the sensor reported rain the weather does not know — the number
+    behind "the rain sensor is wet with dew"."""
+    return {
+        "device": publish.device,
+        "ga": publish.ga,
+        "name": publish.name,
+        "unexplained_pct": publish.level,
+        "healthy_pct": publish.healthy,
+        "excess_pct": publish.excess,
+        "rising_since": publish.rising_since,
+    }
+
+
+def measure_unexplained_rain(
+    conn: psycopg.Connection[DictRow],
+    fault: Fault,
+    window: Window,
+    _open_rows: Sequence[OpenEpisodeRow],
+) -> Measured[DeviceState]:
+    """The unexplained-rain signal: the declared references married to the
+    scope, each sensor's hours held against the weather, then the share of
+    the day, the walk and the observations per sensor.
+    """
+    trailing, min_samples = _trailing_window(fault, window)
+    margin = int(fault.parameters["dry_margin_hours"])
+    devices = _devices(conn, fault)
+    wet = hourly_averages(conn, [d.ga for d in devices], window.start)
+    precipitation = weather_precipitation(conn, window.start + WEATHER_STAMP - margin * BUCKET)
+    hours = {
+        device.ga: rain_hours(
+            wet.get(device.ga, {}),
+            precipitation,
+            window_start=window.start,
+            frontier=window.frontier,
+            wet_fraction=float(fault.parameters["wet_hour_fraction"]),
+            margin=margin,
+        )
+        for device in devices
+    }
+    levels = {
+        ga: unexplained_shares(
+            series,
+            window_start=window.start,
+            frontier=window.frontier,
+            window=trailing,
+            min_samples=min_samples,
+        )
+        for ga, series in hours.items()
+    }
+    return _walk(
+        devices,
+        levels,
+        window=window,
+        rise=float(fault.parameters["rise_pct"]),
+        budget=float(fault.parameters["budget_pct_h"]),
+        # The count behind the share: how many of the window's hours a
+        # sensor read wet under a dry sky.
+        record={
+            "unexplained_hours": sum(
+                1 for series in hours.values() for _, unexplained in series if unexplained
+            )
+        },
     )

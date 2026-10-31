@@ -176,6 +176,18 @@ _DRIFT_SIGNALS: Mapping[DriftSignal, Kind[Any, Any]] = {
         publish_for=drift.publish_for_exchanger,
         payload=drift.payload_recovery,
     ),
+    DriftSignal.UNEXPLAINED_RAIN: Kind(
+        event="unexplained_rain_run",
+        delivery="per_device",
+        # The sensor's hours come off the channel aggregate, the weather's
+        # off the forecast job: the frontier is the older of the two.
+        frontier=drift.rain_frontier,
+        measure=drift.measure_unexplained_rain,
+        publish_for=drift.publish_for,
+        payload=drift.payload_unexplained_rain,
+        policy=drift.RAIN_POLICY,
+        history=drift.WEATHER_HISTORY,
+    ),
 }
 
 
