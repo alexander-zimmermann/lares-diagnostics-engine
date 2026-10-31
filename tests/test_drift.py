@@ -41,6 +41,7 @@ from lares_diagnostics_engine.drift import (
     drift_observations,
     duty_cycles,
     efficiency_series,
+    held_back,
     min_window_samples,
     payload_unexplained_rain,
     publish_for,
@@ -1144,6 +1145,28 @@ class TestDew:
         assert len(episodes) == 1
         assert episodes[0].ended_at is None
 
+    def test_a_stopped_forecast_job_freezes_the_picture(self) -> None:
+        # A week of dew, then the forecast job stops while the channels run
+        # on for another week. Measured against the channels alone the
+        # episode would end after the quiet days with the sensor still
+        # dewing; held back to the job's last write it stays open.
+        wet = ([1.0] * 12 + [0.0] * 12) * 7
+        rain = [0.0] * len(wet)
+        observations = self._observations(wet, rain)
+        last_write = self._levels(wet, rain)[-1][0] + 10 * _MINUTE
+        channels = last_write + 7 * _DAY
+        frontier = held_back(channels, last_write)
+        assert frontier == last_write - 10 * _MINUTE
+
+        def episodes_at(now: datetime) -> tuple[Episode, ...]:
+            return fold_observations(
+                "rain_without_weather", observations, [], RAIN_POLICY, now
+            )
+
+        assert episodes_at(channels)[0].ended_at is not None
+        [episode] = episodes_at(frontier)
+        assert episode.ended_at is None
+
     def test_the_episode_ends_after_the_repair(self) -> None:
         # Dew for a week, the heating fixed, six clean days: four quiet
         # days after the last dewy one, the episode closes and the address
@@ -1174,3 +1197,15 @@ class TestPayloadUnexplainedRain:
             "excess_pct": 50.0,
             "rising_since": _T0,
         }
+
+
+class TestHeldBack:
+    def test_the_channels_set_the_frontier_while_the_weather_keeps_up(self) -> None:
+        assert held_back(_T0, _T0 + 25 * _MINUTE) == _T0
+
+    def test_a_weather_write_counts_from_the_start_of_its_hour(self) -> None:
+        assert held_back(_T0 + 5 * _HOUR, _T0 + 2 * _HOUR + 40 * _MINUTE) == _T0 + 2 * _HOUR
+
+    def test_either_clock_missing_measures_nothing(self) -> None:
+        assert held_back(None, _T0) is None
+        assert held_back(_T0, None) is None

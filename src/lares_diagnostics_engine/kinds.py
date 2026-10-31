@@ -179,9 +179,9 @@ _DRIFT_SIGNALS: Mapping[DriftSignal, Kind[Any, Any]] = {
     DriftSignal.UNEXPLAINED_RAIN: Kind(
         event="unexplained_rain_run",
         delivery="per_device",
-        # The sensor's hours come off the channel aggregate, so its frontier
-        # is the one silence reads.
-        frontier=silence.frontier,
+        # The sensor's hours come off the channel aggregate, the weather's
+        # off the forecast job: the frontier is the older of the two.
+        frontier=drift.rain_frontier,
         measure=drift.measure_unexplained_rain,
         publish_for=drift.publish_for,
         payload=drift.payload_unexplained_rain,

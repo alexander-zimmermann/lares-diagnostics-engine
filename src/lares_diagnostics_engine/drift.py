@@ -73,6 +73,7 @@ from .faults import ExchangerRoles, Scope
 from .reconcile import Measured, Window, measurement_reaches
 from .runs import split_runs
 from .silence import BUCKET, hourly_averages, like_match, pair_by_match, resolve_scope
+from .silence import frontier as channel_frontier
 from .slug import entity_slug
 
 if TYPE_CHECKING:
@@ -1154,6 +1155,39 @@ RAIN_POLICY = EpisodePolicy(quiet_runs=96)
 
 # How far back the weather reaches: `mcp_forecasts` keeps 90 days.
 WEATHER_HISTORY = timedelta(days=90)
+
+
+def rain_frontier(conn: psycopg.Connection[DictRow]) -> datetime | None:
+    """The 'now' the rain signal is measured against: the channel
+    aggregate's frontier, held back to the hour the weather job last wrote.
+
+    The weather is a second clock. Every other signal reads the source its
+    frontier comes from, so a stalled source freezes the picture; here a
+    forecast job that stopped would leave the channels running on, the
+    hours behind them unjudgeable, and an open episode would end after the
+    quiet days on nothing but missing weather.
+    """
+    row = conn.execute(
+        """
+        SELECT max(created_at) AS written FROM mcp_forecasts
+        WHERE source = %(source)s AND metric = %(metric)s AND model = %(model)s
+        """,
+        {
+            "source": forecast_weather.SOURCE,
+            "metric": forecast_weather.METRIC_MAP["precipitation"],
+            "model": forecast_weather.MODEL,
+        },
+    ).fetchone()
+    return held_back(channel_frontier(conn), row["written"] if row else None)
+
+
+def held_back(channels: datetime | None, written: datetime | None) -> datetime | None:
+    """The older of the two clocks on the hourly grid: the weather's last
+    write counts from the start of its hour. Either one missing means there
+    is nothing to measure against."""
+    if channels is None or written is None:
+        return None
+    return min(channels, written.replace(minute=0, second=0, microsecond=0))
 
 
 def weather_precipitation(
