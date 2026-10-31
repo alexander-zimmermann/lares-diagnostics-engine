@@ -1102,6 +1102,73 @@ def test_rooms_on_a_recovery_drift_rejected(tmp_path: Path) -> None:
         FaultList.load(_write(tmp_path, body))
 
 
+_UNEXPLAINED_RAIN = """
+faults:
+  - name: rain_without_weather
+    sentence: "Der Regensensor meldet über den Tag mehr als 10 Prozentpunkte
+      der Stunden Regen, in denen das Wetter keinen Niederschlag kennt."
+    unit: "× der erlaubten Erhöhung"
+    kind: drift
+    signal: unexplained_rain
+    parameters:
+      rise_pct: 10
+      budget_pct_h: 200
+      window_hours: 24
+      min_window_fraction: 0.8
+      wet_hour_fraction: 0.5
+      dry_margin_hours: 1
+    scope:
+      dpt: "1.001"
+      include: "Sensorik.%.Regen"
+    references:
+      A.Dach.Wetterstation:
+        healthy_pct: 0
+    target:
+      per_device: true
+      name: "Sensorik.{entity}.Regen-Anomalie"
+"""
+
+
+def test_unexplained_rain_drift_loads_its_reference_in_percent(tmp_path: Path) -> None:
+    [fault] = FaultList.load(_write(tmp_path, _UNEXPLAINED_RAIN))
+    assert fault.kind is MeasurementKind.DRIFT
+    assert fault.signal is DriftSignal.UNEXPLAINED_RAIN
+    assert fault.references == (DeviceReference(match="A.Dach.Wetterstation", healthy=0),)
+    assert fault.target is not None
+    assert fault.target.per_device
+
+
+def test_unexplained_rain_drift_requires_its_margin(tmp_path: Path) -> None:
+    # Without the margin the model's timing decides: a shower an hour late
+    # would read as rain the weather does not know.
+    body = _UNEXPLAINED_RAIN.replace("      dry_margin_hours: 1\n", "")
+    with pytest.raises(ValueError, match=r"'rain_without_weather'.*dry_margin_hours"):
+        FaultList.load(_write(tmp_path, body))
+
+
+def test_unexplained_rain_margin_is_whole_hours(tmp_path: Path) -> None:
+    # The weather is stored per hour; half an hour of margin is no span the
+    # grid can hold.
+    body = _UNEXPLAINED_RAIN.replace("dry_margin_hours: 1", "dry_margin_hours: 0.5")
+    with pytest.raises(ValueError, match=r"'rain_without_weather'.*dry_margin_hours"):
+        FaultList.load(_write(tmp_path, body))
+
+
+def test_unexplained_rain_parameter_in_another_signal_unit_rejected(tmp_path: Path) -> None:
+    # The door run belongs to the freezer's walk; a rain sensor has no door.
+    body = _UNEXPLAINED_RAIN.replace(
+        "      rise_pct: 10\n", "      rise_pct: 10\n      door_run_hours: 3\n"
+    )
+    with pytest.raises(ValueError, match=r"'rain_without_weather'.*door_run_hours"):
+        FaultList.load(_write(tmp_path, body))
+
+
+def test_unexplained_rain_reference_in_another_signal_unit_rejected(tmp_path: Path) -> None:
+    body = _UNEXPLAINED_RAIN.replace("healthy_pct: 0", "healthy_ma: 0")
+    with pytest.raises(ValueError, match=r"'rain_without_weather'.*A.Dach.Wetterstation"):
+        FaultList.load(_write(tmp_path, body))
+
+
 _DEVIATION = """
 faults:
   - name: fbh_cold
@@ -1507,7 +1574,16 @@ def test_a_measured_fault_is_explained_unless_it_says_otherwise(tmp_path: Path) 
 
 
 def test_every_measured_kind_defaults_to_explained(tmp_path: Path) -> None:
-    for body in (_CONSTANCY, _DURATION, _DRIFT, _RECOVERY, _DEVIATION, _EXPECTATION, _VOLUME):
+    for body in (
+        _CONSTANCY,
+        _DURATION,
+        _DRIFT,
+        _RECOVERY,
+        _UNEXPLAINED_RAIN,
+        _DEVIATION,
+        _EXPECTATION,
+        _VOLUME,
+    ):
         for fault in FaultList.load(_write(tmp_path, body)):
             assert fault.explain is True, f"{fault.name} ({fault.kind})"
 

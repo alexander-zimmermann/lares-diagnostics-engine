@@ -57,6 +57,9 @@ class DriftSignal(StrEnum):
     # The heat-recovery efficiency of an air exchanger, in percent: the one
     # signal that walks downward — fouling lowers what the exchanger can do.
     RECOVERY = "recovery"
+    # The share of the day a rain sensor reports rain the weather does not
+    # know, in percent: a sensor whose heating died reads every dew as rain.
+    UNEXPLAINED_RAIN = "unexplained_rain"
 
 
 class DeviationExpectation(StrEnum):
@@ -78,6 +81,7 @@ _HEALTHY_FIELD = {
     DriftSignal.STANDBY: "healthy_ma",
     DriftSignal.DUTY_CYCLE: "healthy_duty_pct",
     DriftSignal.RECOVERY: "healthy_pct",
+    DriftSignal.UNEXPLAINED_RAIN: "healthy_pct",
 }
 
 # And what each signal calls the numbers it walks by. The schema requires
@@ -88,6 +92,12 @@ _SIGNAL_PARAMETERS = {
     DriftSignal.STANDBY: ("rise_ma", "budget_ma_h"),
     DriftSignal.DUTY_CYCLE: ("rise_pct", "budget_pct_h", "door_run_hours", "on_ma"),
     DriftSignal.RECOVERY: ("fall_pct", "budget_pct_h", "min_delta_k"),
+    DriftSignal.UNEXPLAINED_RAIN: (
+        "rise_pct",
+        "budget_pct_h",
+        "wet_hour_fraction",
+        "dry_margin_hours",
+    ),
 }
 
 
@@ -173,8 +183,8 @@ class DeviceReference:
     fault as healthy, which is the whole reason it is declared.
 
     The unit is the signal's: milliamps of idle draw for `standby`, percent
-    of the day for `duty_cycle`. The file names it either way; here the
-    fault's signal already says which one this is.
+    of the day for `duty_cycle` and `unexplained_rain`. The file names it
+    either way; here the fault's signal already says which one this is.
     """
 
     match: str

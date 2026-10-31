@@ -21,7 +21,7 @@
         "sentence":   { "type": "string", "minLength": 1 },
         "unit":       { "type": "string", "minLength": 1 },
         "kind":       { "enum": ["drift", "duration", "deviation", "silence", "constancy", "external", "volume"] },
-        "signal":     { "enum": ["standby", "duty_cycle", "recovery"] },
+        "signal":     { "enum": ["standby", "duty_cycle", "recovery", "unexplained_rain"] },
         "expectation": { "enum": ["forecast_solar"] },
         "parameters": {
           "type": "object",
@@ -170,6 +170,26 @@
         },
         {
           "if": {
+            "properties": { "kind": { "const": "drift" }, "signal": { "const": "unexplained_rain" } },
+            "required": ["kind", "signal"]
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "required": ["rise_pct", "budget_pct_h", "wet_hour_fraction", "dry_margin_hours"],
+                "properties": {
+                  "rise_pct":          { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+                  "budget_pct_h":      { "type": "number", "exclusiveMinimum": 0 },
+                  "wet_hour_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+                  "dry_margin_hours":  { "type": "integer", "minimum": 0 }
+                }
+              },
+              "references": { "$ref": "#/$defs/unexplainedRainReferences" }
+            }
+          }
+        },
+        {
+          "if": {
             "allOf": [
               { "properties": { "kind": { "const": "deviation" } }, "required": ["kind"] },
               { "not": { "required": ["expectation"] } }
@@ -249,6 +269,15 @@
     },
     "recoveryReferences": {
       "maxProperties": 1,
+      "additionalProperties": {
+        "properties": {
+          "healthy_pct": { "type": "number", "minimum": 0, "maximum": 100 }
+        },
+        "required": ["healthy_pct"],
+        "additionalProperties": false
+      }
+    },
+    "unexplainedRainReferences": {
       "additionalProperties": {
         "properties": {
           "healthy_pct": { "type": "number", "minimum": 0, "maximum": 100 }

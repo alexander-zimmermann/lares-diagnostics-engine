@@ -68,7 +68,8 @@ How a fault is measured. Every fault has exactly one:
 - **drift** — something a device does sits persistently above (or, for
   recovery, below) the healthy level declared for it, walked as a CUSUM
   with a pinned reference. Which series it walks is the fault's declared
-  **signal**: `standby`, `duty_cycle` or `recovery`. A duty-cycle
+  **signal**: `standby`, `duty_cycle`, `recovery` or `unexplained_rain`
+  (rain the sensor reports and the stored weather does not). A duty-cycle
   reference may **follow the room**: it names the temperature channel
   around the device, the temperature it was read at and its slope per
   kelvin, and is recomputed per bucket from the room's trailing mean — a

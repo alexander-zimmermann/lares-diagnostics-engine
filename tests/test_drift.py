@@ -9,7 +9,8 @@ or a resolution error naming the device. The shared reconciliation is
 The load-bearing cases are the two the z-score provably could not tell
 apart: a slow ramp must fire, and a small permanent step must never fire,
 however long it stands. For the duty-cycle signal a third joins them: a
-door left open must not read as an iced evaporator.
+door left open must not read as an iced evaporator. For the rain sensor a
+fourth: rain the model missed now and then must not read as dew.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from lares_diagnostics_engine.drift import (
+    RAIN_POLICY,
+    WEATHER_STAMP,
     Ambient,
     Device,
     DevicePublish,
@@ -39,14 +42,18 @@ from lares_diagnostics_engine.drift import (
     duty_cycles,
     efficiency_series,
     min_window_samples,
+    payload_unexplained_rain,
     publish_for,
     publish_for_exchanger,
+    rain_hours,
     reaches_frontier,
     resolve_devices,
     resolve_exchanger,
     standby_floors,
+    unexplained_shares,
 )
 from lares_diagnostics_engine.episodes import (
+    Episode,
     EpisodePolicy,
     Observation,
     fold_observations,
@@ -931,3 +938,239 @@ class TestPublishForExchanger:
         assert publish.severity == 0
         assert publish.exchanger == "kwl"
         assert publish.efficiency is None
+
+
+# The rain_without_weather fault's declared numbers: a working sensor is wet
+# only when it rains, the model may miss ten points of the day, and 200
+# point-hours past that is the line. An hour counts as wet when the sensor
+# reported rain for half of it, and a shower an hour off is the same shower.
+_RAIN_RISE = 10.0
+_RAIN_BUDGET = 200.0
+_RAIN_COVERAGE = min_window_samples(_DAY, 0.8)
+_WET_FRACTION = 0.5
+_MARGIN = 1
+
+_RAIN = Channel(ga="8/5/53", name="Sensorik.A.Dach.Wetterstation.Regen", dpt="1.001")
+
+
+def _sensor(wet: Sequence[float], start: datetime = _T0) -> dict[datetime, float]:
+    """The sensor's hourly share of rain telegrams, one value per bucket."""
+    return {start + n * _HOUR: v for n, v in enumerate(wet)}
+
+
+def _sky(rain: Sequence[float], start: datetime = _T0) -> dict[datetime, float]:
+    """The weather's precipitation per bucket in mm, stamped the way
+    Open-Meteo stamps it — at the hour's end — and padded dry on both sides
+    so the margin around the first and last bucket is known."""
+    padded = [0.0] * _MARGIN + list(rain) + [0.0] * _MARGIN
+    first = start - _MARGIN * _HOUR + WEATHER_STAMP
+    return {first + n * _HOUR: mm for n, mm in enumerate(padded)}
+
+
+def _hours(
+    wet: Sequence[float], rain: Sequence[float], *, margin: int = _MARGIN
+) -> list[tuple[datetime, bool]]:
+    return rain_hours(
+        _sensor(wet),
+        _sky(rain),
+        window_start=_T0,
+        frontier=_T0 + (len(wet) - 1) * _HOUR,
+        wet_fraction=_WET_FRACTION,
+        margin=margin,
+    )
+
+
+class TestRainHours:
+    def test_a_wet_hour_under_a_dry_sky_is_unexplained(self) -> None:
+        assert _hours([1.0, 1.0], [0.0, 0.0]) == [(_T0, True), (_T0 + _HOUR, True)]
+
+    def test_a_wet_hour_the_weather_rained_in_is_explained(self) -> None:
+        assert _hours([1.0], [0.4]) == [(_T0, False)]
+
+    def test_the_margin_forgives_an_hour_of_timing(self) -> None:
+        # The model put the shower an hour after the sensor saw it: the same
+        # shower. Two hours off it is not.
+        hours = _hours([1.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 0.6])
+        assert hours == [
+            (_T0, True),
+            (_T0 + _HOUR, False),
+            (_T0 + 2 * _HOUR, False),
+            (_T0 + 3 * _HOUR, False),
+        ]
+
+    def test_the_weather_stamps_an_hour_at_its_end(self) -> None:
+        # Rain stamped 01:00 fell from midnight to one: it explains the
+        # bucket at midnight. Rain stamped midnight fell the hour before.
+        def at_midnight(sky: dict[datetime, float]) -> list[tuple[datetime, bool]]:
+            return rain_hours(
+                {_T0: 1.0},
+                sky,
+                window_start=_T0,
+                frontier=_T0,
+                wet_fraction=_WET_FRACTION,
+                margin=0,
+            )
+
+        assert at_midnight({_T0 + _HOUR: 0.3}) == [(_T0, False)]
+        assert at_midnight({_T0 + _HOUR: 0.0, _T0: 0.3}) == [(_T0, True)]
+
+    def test_a_dry_hour_is_measured_and_explains_nothing(self) -> None:
+        assert _hours([0.0], [0.0]) == [(_T0, False)]
+
+    def test_a_sensor_wet_for_less_than_the_fraction_counts_as_dry(self) -> None:
+        assert _hours([0.3], [0.0]) == [(_T0, False)]
+
+    def test_an_hour_the_weather_does_not_cover_measures_nothing(self) -> None:
+        # The forecast job missed an hour: a dry sky is not what it said.
+        sky = _sky([0.0, 0.0, 0.0])
+        del sky[_T0 + _HOUR + WEATHER_STAMP]
+        hours = rain_hours(
+            _sensor([1.0, 1.0, 1.0, 1.0]),
+            sky,
+            window_start=_T0,
+            frontier=_T0 + 3 * _HOUR,
+            wet_fraction=_WET_FRACTION,
+            margin=_MARGIN,
+        )
+        # Buckets 0–2 each need the missing hour inside their margin; bucket
+        # 3 needs an hour past the padding.
+        assert hours == []
+
+    def test_an_hour_the_sensor_did_not_send_measures_nothing(self) -> None:
+        wet = _sensor([1.0, 1.0, 1.0])
+        del wet[_T0 + _HOUR]
+        hours = rain_hours(
+            wet,
+            _sky([0.0, 0.0, 0.0]),
+            window_start=_T0,
+            frontier=_T0 + 2 * _HOUR,
+            wet_fraction=_WET_FRACTION,
+            margin=_MARGIN,
+        )
+        assert hours == [(_T0, True), (_T0 + 2 * _HOUR, True)]
+
+
+def _shares(
+    hours: Sequence[tuple[datetime, bool]], frontier: datetime
+) -> list[tuple[datetime, float]]:
+    return unexplained_shares(
+        hours, window_start=_T0, frontier=frontier, window=_DAY, min_samples=_RAIN_COVERAGE
+    )
+
+
+class TestUnexplainedShares:
+    def test_the_level_is_the_unexplained_share_of_the_day(self) -> None:
+        hours = [(_T0 + n * _HOUR, n < 6) for n in range(24)]
+        assert _shares(hours, _T0 + 23 * _HOUR)[-1] == (_T0 + 23 * _HOUR, 25.0)
+
+    def test_the_level_is_read_at_every_hour_once_covered(self) -> None:
+        # Twenty-two measured hours, then two the forecast job missed: the
+        # trailing window keeps reading through them.
+        hours = [(_T0 + n * _HOUR, True) for n in range(22)]
+        levels = _shares(hours, _T0 + 23 * _HOUR)
+        assert levels[-1] == (_T0 + 23 * _HOUR, 100.0)
+        assert [t for t, _ in levels] == [_T0 + n * _HOUR for n in range(19, 24)]
+
+    def test_a_window_short_of_measured_hours_yields_nothing(self) -> None:
+        hours = [(_T0 + n * _HOUR, True) for n in range(_RAIN_COVERAGE - 1)]
+        assert _shares(hours, _T0 + 23 * _HOUR) == []
+
+
+class TestDew:
+    """The rain_without_weather fault end to end over its own signal: the
+    sensor and the sky in, observations out, with the declared numbers of
+    the fault file."""
+
+    def _levels(self, wet: Sequence[float], rain: Sequence[float]) -> list[tuple[datetime, float]]:
+        return _shares(_hours(wet, rain), _T0 + (len(wet) - 1) * _HOUR)
+
+    def _observations(self, wet: Sequence[float], rain: Sequence[float]) -> list[Observation]:
+        trace = accumulate(self._levels(wet, rain), healthy=0.0, rise=_RAIN_RISE)
+        return drift_observations(_RAIN.ga, trace, rise=_RAIN_RISE, budget=_RAIN_BUDGET)
+
+    def test_a_sensor_wet_with_dew_every_night_fires(self) -> None:
+        # The station as measured from 18 August: wet through the night,
+        # dried by the sun, under a dry sky — half the day unexplained.
+        days = 5
+        wet = ([1.0] * 12 + [0.0] * 12) * days
+        observations = self._observations(wet, [0.0] * 24 * days)
+        assert observations
+        # Forty-odd points past the rise fill the 200 point-hours within
+        # hours of the first reading, not days.
+        assert observations[0].time < _T0 + _DAY + 6 * _HOUR
+        assert observations[-1].value == pytest.approx(50.0)
+
+    def test_a_healthy_sensor_in_a_wet_week_never_fires(self) -> None:
+        # Eight hours of rain a day, and the sensor wet exactly then.
+        day = [1.0] * 8 + [0.0] * 16
+        rain = [0.8] * 8 + [0.0] * 16
+        assert self._observations(day * 7, rain * 7) == []
+
+    def test_a_shower_the_model_missed_now_and_then_never_fires(self) -> None:
+        # Two hours a day the sensor saw rain the model did not: 8 % of the
+        # day, inside the declared rise, for a month.
+        day = [1.0] * 2 + [0.0] * 22
+        assert self._observations(day * 30, [0.0] * 24 * 30) == []
+
+    def test_a_dead_forecast_job_is_unmeasured_not_healthy(self) -> None:
+        # No weather at all: no level, so the station lands in `dataless`
+        # and an open episode stays open instead of clearing.
+        hours = rain_hours(
+            _sensor([1.0] * 48),
+            {},
+            window_start=_T0,
+            frontier=_T0 + 47 * _HOUR,
+            wet_fraction=_WET_FRACTION,
+            margin=_MARGIN,
+        )
+        assert _shares(hours, _T0 + 47 * _HOUR) == []
+
+    def _episodes(self, wet: Sequence[float]) -> tuple[Episode, ...]:
+        rain = [0.0] * len(wet)
+        return fold_observations(
+            "rain_without_weather",
+            self._observations(wet, rain),
+            [],
+            RAIN_POLICY,
+            self._levels(wet, rain)[-1][0],
+        )
+
+    def test_three_windy_nights_do_not_split_the_incident(self) -> None:
+        # Dew needs a clear, calm night: a windy spell dries even a dead
+        # heater's sensor, and the walk starts over. It is still the one
+        # broken heater.
+        dew = [1.0] * 12 + [0.0] * 12
+        episodes = self._episodes(dew * 5 + [0.0] * 24 * 3 + dew * 5)
+        assert len(episodes) == 1
+        assert episodes[0].ended_at is None
+
+    def test_the_episode_ends_after_the_repair(self) -> None:
+        # Dew for a week, the heating fixed, six clean days: four quiet
+        # days after the last dewy one, the episode closes and the address
+        # clears.
+        episodes = self._episodes(([1.0] * 12 + [0.0] * 12) * 7 + [0.0] * 24 * 6)
+        assert len(episodes) == 1
+        assert episodes[0].ended_at is not None
+
+
+class TestPayloadUnexplainedRain:
+    def test_the_payload_says_how_much_of_the_day_is_unexplained(self) -> None:
+        publish = DevicePublish(
+            ga=_RAIN.ga,
+            severity=2,
+            device="A.Dach.Wetterstation",
+            name=_RAIN.name,
+            level=50.0,
+            healthy=0.0,
+            excess=50.0,
+            rising_since=_T0,
+        )
+        assert payload_unexplained_rain(publish) == {
+            "device": "A.Dach.Wetterstation",
+            "ga": _RAIN.ga,
+            "name": _RAIN.name,
+            "unexplained_pct": 50.0,
+            "healthy_pct": 0.0,
+            "excess_pct": 50.0,
+            "rising_since": _T0,
+        }

@@ -111,7 +111,7 @@ file the same way the fault list is validated.
 | `silence`    | A channel that used to send has been quiet longer than N× its own usual pause (a quantile of its own gaps). A channel new to the window is unproven — unmeasured, not alive — until it has shown enough gaps. | main group |
 | `constancy`  | A channel keeps sending but has delivered the exact same value for longer than allowed: the producer works, the register behind it is dead. | main group |
 | `duration`   | A device draws current for longer than its declared limit. | device |
-| `drift`      | CUSUM against a healthy reference pinned in the entry, never derived from history. `signal` picks the series: `standby` (mA), `duty_cycle` (%), `recovery` (%, the one that walks downward). | device, or one GA |
+| `drift`      | CUSUM against a healthy reference pinned in the entry, never derived from history. `signal` picks the series: `standby` (mA), `duty_cycle` (%), `recovery` (%, the one that walks downward), `unexplained_rain` (%, the hours a rain sensor reads wet while the stored weather shows no precipitation). | device, or one GA |
 | `deviation`  | A value sits too far under its reference: a room against its setpoint while a gate holds, or the plant's daily yield — the plausible rises of each declared inverter's counter between hourly closes, summed — against a named `expectation` (`forecast_solar`). | room, or one GA |
 | `volume`     | More than N episodes in seven days, over the engine's own episode stream. Declared last, so the count includes what this run just wrote. | one GA |
 | `external`   | Basalte detects and delivers itself; the engine reads the severity writes back off the bus archive, from a per-fault read cursor, and only records. Nothing is published. | — |
