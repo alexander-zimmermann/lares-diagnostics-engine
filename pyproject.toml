@@ -17,7 +17,7 @@ classifiers = [
 ]
 dependencies = [
     "jsonschema>=4.26.0",
-    "psycopg[binary,pool]>=3.3.6",
+    "psycopg[binary,pool]>=3.3.8",
     "pydantic>=2.14.2",
     "pydantic-settings>=2.16.2",
     "pyyaml>=6.0.3",
@@ -32,7 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.2.0",
-    "pytest-asyncio>=1.4.1",
+    "pytest-asyncio>=1.4.1.post1",
     "respx>=0.23.1",
     "ruff>=0.17.3",
     "mypy>=2.4.1",
