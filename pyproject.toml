@@ -17,13 +17,13 @@ classifiers = [
 ]
 dependencies = [
     "jsonschema>=4.26.0",
-    "psycopg[binary,pool]>=3.3.8",
-    "pydantic>=2.14.2",
-    "pydantic-settings>=2.16.2",
-    "pyyaml>=6.0.3",
+    "psycopg[binary,pool]>=3.3.9",
+    "pydantic>=2.14.4",
+    "pydantic-settings>=2.16.3",
+    "pyyaml>=6.0.4",
     "structlog>=26.1.0",
     "httpx>=0.28.1",
-    "nats-py[nkeys]>=2.16.0",
+    "nats-py[nkeys]>=2.17.0",
     "nats-bridge-core @ git+https://github.com/alexander-zimmermann/nats-bridge-core@v0.11.0",
     "opentelemetry-api>=1.45.2",
     "opentelemetry-sdk>=1.45.2",
@@ -32,9 +32,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.2.0",
-    "pytest-asyncio>=1.4.1.post1",
+    "pytest-asyncio>=1.5.0",
     "respx>=0.23.1",
-    "ruff>=0.17.3",
+    "ruff>=0.17.6",
     "mypy>=2.4.1",
     "types-jsonschema",
     "types-PyYAML",
