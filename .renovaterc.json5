@@ -1,9 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "github>alexander-zimmermann/lares//.renovate/sidecarBase.json5",
-    "github>alexander-zimmermann/lares//.renovate/sidecarPython.json5",
+    "github>alexander-zimmermann/.github//.renovate/sidecarBase.json5#v1.0.0",
+    "github>alexander-zimmermann/.github//.renovate/sidecarPython.json5#v1.0.0",
     // Tracks the nats-bridge-core git tag in pyproject.toml.
-    "github>alexander-zimmermann/lares//.renovate/sidecarCoreDep.json5",
+    "github>alexander-zimmermann/.github//.renovate/sidecarCoreDep.json5#v1.0.0",
   ],
 }
