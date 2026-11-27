@@ -20,7 +20,7 @@
         "name":       { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
         "sentence":   { "type": "string", "minLength": 1 },
         "unit":       { "type": "string", "minLength": 1 },
-        "kind":       { "enum": ["drift", "duration", "deviation", "silence", "constancy", "external", "volume"] },
+        "kind":       { "enum": ["drift", "duration", "deviation", "silence", "constancy", "consistency", "external", "volume"] },
         "signal":     { "enum": ["standby", "duty_cycle", "recovery", "unexplained_rain"] },
         "expectation": { "enum": ["forecast_solar"] },
         "parameters": {
@@ -30,7 +30,7 @@
         },
         "devices":    { "$ref": "#/$defs/devices" },
         "references": { "$ref": "#/$defs/references" },
-        "roles":      { "oneOf": [ { "$ref": "#/$defs/roles" }, { "$ref": "#/$defs/exchangerRoles" } ] },
+        "roles":      { "oneOf": [ { "$ref": "#/$defs/roles" }, { "$ref": "#/$defs/exchangerRoles" }, { "$ref": "#/$defs/summaryRoles" } ] },
         "rooms":      { "$ref": "#/$defs/rooms" },
         "explain":    { "type": "boolean" },
         "scope":      { "$ref": "#/$defs/scope" },
@@ -45,11 +45,11 @@
           "then": { "properties": { "parameters": { "required": ["max_episodes_per_week"] } } }
         },
         {
-          "$comment": "A fault that measures no channels declares no catalog query: the volume watchdog counts episodes, a deviation fault with a named expectation measures against that model.",
+          "$comment": "A fault that measures no channels declares no catalog query: the volume watchdog counts episodes, a deviation fault with a named expectation measures against that model. A consistency fault's roles are its catalog query.",
           "if": {
             "not": {
               "anyOf": [
-                { "properties": { "kind": { "const": "volume" } }, "required": ["kind"] },
+                { "properties": { "kind": { "enum": ["volume", "consistency"] } }, "required": ["kind"] },
                 { "required": ["expectation"] }
               ]
             }
@@ -80,6 +80,21 @@
                   "same_within":    { "type": "number", "minimum": 0 }
                 }
               }
+            }
+          }
+        },
+        {
+          "if":   { "properties": { "kind": { "const": "consistency" } }, "required": ["kind"] },
+          "then": {
+            "required": ["roles"],
+            "properties": {
+              "parameters": {
+                "required": ["min_hours"],
+                "properties": {
+                  "min_hours": { "type": "number", "exclusiveMinimum": 0 }
+                }
+              },
+              "roles": { "$ref": "#/$defs/summaryRoles" }
             }
           }
         },
@@ -303,6 +318,15 @@
         "supply":  { "type": "string", "minLength": 1 }
       },
       "required": ["outdoor", "extract", "supply"],
+      "additionalProperties": false
+    },
+    "summaryRoles": {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "members": { "type": "string", "minLength": 1 }
+      },
+      "required": ["summary", "members"],
       "additionalProperties": false
     },
     "rooms": {

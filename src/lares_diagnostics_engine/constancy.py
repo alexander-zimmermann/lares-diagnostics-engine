@@ -39,7 +39,7 @@ from operator import attrgetter
 from typing import TYPE_CHECKING, Any
 
 from .episodes import Observation
-from .groups import GroupPublish, group_plan
+from .groups import GroupPublish, group_plan, main_group
 from .logging_setup import get_logger
 from .reconcile import Measured, Window
 from .silence import BUCKET, Channel, resolve_scope
@@ -426,6 +426,8 @@ def plan_run(
         measured=measured,
         frontier=frontier,
         report_for=report_for,
+        group_of=main_group,
+        publish_for=GroupPublish,
     )
 
 

@@ -69,7 +69,12 @@ carries:
 - `scope` — a catalog query (`dpt`, `include`, `exclude`; the name
   patterns in SQL `LIKE` form), resolved against `ga_catalog` on every
   run. Never a hand-written address list. Channels that never sent are
-  dropped where the scope resolves, logged, not reported.
+  dropped where the scope resolves, logged, not reported. `volume`
+  declares none, and neither does a `deviation` that names an
+  `expectation`, nor `consistency`, whose roles are its query.
+- `roles` — where a kind names channels by role, each a `LIKE` pattern:
+  `deviation`'s `reference` and `gate`, the `recovery` drift's three
+  airs, `consistency`'s `summary` and `members`.
 - `target` — where the severity goes: one `ga`, or `per_main_group`,
   `per_device`, `per_room`. The addresses behind it are the bridge's
   writer rules. A per-device or per-room target may add `name`, the
@@ -112,6 +117,7 @@ file the same way the fault list is validated.
 | `constancy`  | A channel keeps sending but has delivered the exact same value for longer than allowed: the producer works, the register behind it is dead. | main group |
 | `duration`   | A device draws current for longer than its declared limit. | device |
 | `drift`      | CUSUM against a healthy reference pinned in the entry, never derived from history. `signal` picks the series: `standby` (mA), `duty_cycle` (%), `recovery` (%, the one that walks downward), `unexplained_rain` (%, the hours a rain sensor reads wet while the stored weather shows no precipitation). | device, or one GA |
+| `consistency` | A summary channel disagrees with the members beneath it in the ETS building tree (the catalog's `space_path`) for at least `min_hours`: on while every member is off, or off while one is on. A room status against its lights, a floor's against every light on the floor; members are never the summaries below. | one GA |
 | `deviation`  | A value sits too far under its reference: a room against its setpoint while a gate holds, or the plant's daily yield — the plausible rises of each declared inverter's counter between hourly closes, summed — against a named `expectation` (`forecast_solar`). | room, or one GA |
 | `volume`     | More than N episodes in seven days, over the engine's own episode stream. Declared last, so the count includes what this run just wrote. | one GA |
 | `external`   | Basalte detects and delivers itself; the engine reads the severity writes back off the bus archive, from a per-fault read cursor, and only records. Nothing is published. | — |
@@ -229,8 +235,8 @@ uv run mypy src
 Tests follow the rebuild's seams: the fault loader (`test_faults`), the
 site loader (`test_site`), each
 measurement kind against invented fixtures (`test_silence`,
-`test_constancy`, `test_duration`, `test_drift`, `test_deviation`,
-`test_volume`, `test_external`), the episode pipeline (`test_episodes`,
+`test_constancy`, `test_consistency`, `test_duration`, `test_drift`,
+`test_deviation`, `test_volume`, `test_external`), the episode pipeline (`test_episodes`,
 `test_severity`, `test_reconcile`), and the runner lifecycle through fake
 store and publisher ends (`test_runner`). The back-test is driven through
 its own boundary — one candidate entry and a fake connection that hands each

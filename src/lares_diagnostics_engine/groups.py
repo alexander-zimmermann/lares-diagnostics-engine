@@ -12,6 +12,11 @@ channels changed**. Without the second half, a channel going wrong at a
 tier another channel already holds would ride a stale payload — the group
 would still say "one channel", naming the wrong one.
 
+The consistency kind needs the same rule on one house-wide address, with
+every summary of the house in one group. So a plan names how its subjects
+group and how one group's publish is built, and per main group is the
+first of those groupings.
+
 What differs between the kinds is only what a channel report says — how
 long silent, how long stuck, at which value — so each hands in the factory
 that builds one of its own.
@@ -25,7 +30,7 @@ from typing import TYPE_CHECKING, Protocol
 from .reconcile import plan_from, reconcile
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from datetime import datetime
 
     from .episode_store import OpenEpisodeRow
@@ -88,15 +93,25 @@ class ReportFor[S, R](Protocol):
     ) -> R: ...
 
 
-def group_plan[S, R: GroupChannel](
+class GroupPublishFor[G, R, P](Protocol):
+    """A kind's publish factory: one group, the severity it carries now and
+    its reports, worst first — none where nothing is open any more."""
+
+    def __call__(self, group: G, severity: int, reports: tuple[R, ...], /) -> P: ...
+
+
+def group_plan[S, R: GroupChannel, G: (int, str), P](
     *,
     episodes: Sequence[Episode],
     open_rows: Sequence[OpenEpisodeRow],
     measured: Measured[S],
     frontier: datetime,
     report_for: ReportFor[S, R],
-) -> Plan[GroupPublish[R]]:
-    """The shared reconciliation, delivered per main group."""
+    group_of: Callable[[str], G],
+    publish_for: GroupPublishFor[G, R, P],
+) -> Plan[P]:
+    """The shared reconciliation, delivered per group: one publish for every
+    group whose severity moved or whose set of open subjects changed."""
     result = reconcile(
         episodes=episodes,
         open_rows=open_rows,
@@ -114,32 +129,34 @@ def group_plan[S, R: GroupChannel](
         for subject, severity in result.after.items()
     }
 
-    before = _group_state((row.subject, row.severity) for row in open_rows)
-    after = _group_state((subject, report.severity) for subject, report in reports.items())
+    before = _group_state(((row.subject, row.severity) for row in open_rows), group_of)
+    after = _group_state(
+        ((subject, report.severity) for subject, report in reports.items()), group_of
+    )
 
-    publishes: list[GroupPublish[R]] = []
+    publishes: list[P] = []
     for group in sorted(set(before) | set(after)):
         if after.get(group) == before.get(group):
             continue
         severity, _ = after.get(group, (0, frozenset()))
         channels = sorted(
-            (r for r in reports.values() if main_group(r.ga) == group),
+            (r for subject, r in reports.items() if group_of(subject) == group),
             key=lambda r: (-r.severity, -(r.magnitude or 0.0), r.ga),
         )
-        publishes.append(GroupPublish(group, severity, tuple(channels)))
+        publishes.append(publish_for(group, severity, tuple(channels)))
 
     return plan_from(result, publishes)
 
 
-def _group_state(
-    subject_severities: Iterable[tuple[str, int]],
-) -> dict[int, tuple[int, frozenset[str]]]:
-    """Per main group: the maximum severity and the set of open subjects —
-    the two things whose change warrants a publish."""
-    severities: dict[int, int] = {}
-    subjects: dict[int, set[str]] = {}
+def _group_state[G](
+    subject_severities: Iterable[tuple[str, int]], group_of: Callable[[str], G]
+) -> dict[G, tuple[int, frozenset[str]]]:
+    """Per group: the maximum severity and the set of open subjects — the
+    two things whose change warrants a publish."""
+    severities: dict[G, int] = {}
+    subjects: dict[G, set[str]] = {}
     for subject, severity in subject_severities:
-        group = main_group(subject)
+        group = group_of(subject)
         severities[group] = max(severities.get(group, 0), severity)
         subjects.setdefault(group, set()).add(subject)
     return {g: (severities[g], frozenset(subjects[g])) for g in severities}

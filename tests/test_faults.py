@@ -26,6 +26,7 @@ from lares_diagnostics_engine.faults import (
     MeasurementKind,
     Roles,
     RoomRule,
+    SummaryRoles,
     Target,
     parse_entry,
 )
@@ -1537,6 +1538,51 @@ def test_volume_fault_rejects_a_channel_scope(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match=r"'notification_volume'.*scope"):
         FaultList.load(path)
+
+
+_CONSISTENCY = """
+faults:
+  - name: light_status_consistency
+    sentence: "Ein Lichtstatus widerspricht seit mindestens 2 h seinen Leuchten."
+    unit: "× der erlaubten Dauer"
+    kind: consistency
+    parameters:
+      min_hours: 2
+    roles:
+      summary: "Allgemein.%.Beleuchtung-Status"
+      members: "Beleuchtung.%.Ein/Aus-Status"
+    target:
+      ga: "0/0/253"
+"""
+
+
+def test_consistency_fault_loads_its_summary_and_member_roles(tmp_path: Path) -> None:
+    # The two roles are the whole catalog query: which channels summarize,
+    # which are summarized — the building tree says which belong together.
+    [fault] = FaultList.load(_write(tmp_path, _CONSISTENCY))
+    assert fault.kind is MeasurementKind.CONSISTENCY
+    assert fault.roles == SummaryRoles(
+        summary="Allgemein.%.Beleuchtung-Status", members="Beleuchtung.%.Ein/Aus-Status"
+    )
+    assert fault.scope is None
+    assert fault.parameters == {"min_hours": 2}
+    assert fault.target == Target(ga="0/0/253")
+
+
+def test_consistency_fault_rejects_a_channel_scope(tmp_path: Path) -> None:
+    # The roles already are the query; a scope beside them nothing reads.
+    path = _write(tmp_path, _CONSISTENCY + '    scope:\n      include: "%"\n')
+    with pytest.raises(ValueError, match=r"'light_status_consistency'.*scope"):
+        FaultList.load(path)
+
+
+def test_consistency_fault_needs_its_duration_and_both_roles(tmp_path: Path) -> None:
+    without_hours = _CONSISTENCY.replace("min_hours: 2", "max_hours: 2")
+    with pytest.raises(ValueError, match=r"'light_status_consistency'.*min_hours"):
+        FaultList.load(_write(tmp_path, without_hours))
+    without_members = _CONSISTENCY.replace('      members: "Beleuchtung.%.Ein/Aus-Status"\n', "")
+    with pytest.raises(ValueError, match=r"'light_status_consistency'.*roles"):
+        FaultList.load(_write(tmp_path, without_members))
 
 
 def test_measuring_kinds_still_require_a_scope(tmp_path: Path) -> None:

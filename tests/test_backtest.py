@@ -298,6 +298,80 @@ def test_a_constancy_candidate_returns_the_episode_it_would_have_produced() -> N
     assert episode.ended_at is None
 
 
+# --- consistency -----------------------------------------------------------
+
+_LAST_VALUES = "SELECT ga, bucket, last_value FROM knx_1h"
+_LAST_BEFORE = "SELECT DISTINCT ON (ga) ga, last_value FROM knx_1h"
+
+_EG = ["Anwesen", "Gebäude", "Erdgeschoss (EG)"]
+_BUERO = [*_EG, "Büro (E3)"]
+
+# Named the way the house names them before the status moves to Allgemein:
+# the room status and its lights share a pattern, and the status is still
+# measured as a summary — so the hangs in history can be back-tested as
+# they were recorded.
+_CONSISTENCY_ENTRY = {
+    "name": "candidate_consistency",
+    "sentence": "Ein Lichtstatus widerspricht seit mindestens 2 h seinen Leuchten.",
+    "unit": "× der erlaubten Dauer",
+    "kind": "consistency",
+    "parameters": {"min_hours": 2},
+    "roles": {
+        "summary": "Beleuchtung.Gebäude.Zentral.%.Ein/Aus-Status",
+        "members": "Beleuchtung.%.Ein/Aus-Status",
+    },
+    "target": {"ga": "0/0/253"},
+}
+
+
+def test_a_consistency_candidate_returns_the_episode_it_would_have_produced() -> None:
+    # The Büro hang: the Stripe goes off five hours before the frontier, the
+    # room status stays on.
+    def sent(ga: str, *changes: tuple[int, float]) -> list[dict[str, Any]]:
+        return [
+            {"ga": ga, "bucket": _FRONTIER - h * _HOUR, "last_value": v} for h, v in changes
+        ]
+
+    conn = _Conn(
+        {
+            _CATALOG: [
+                {
+                    "ga": "3/0/15",
+                    "name": "Beleuchtung.Gebäude.Zentral.EG.Büro.Ein/Aus-Status",
+                    "space_path": _BUERO,
+                },
+                {
+                    "ga": "3/2/62",
+                    "name": "Beleuchtung.Gebäude.EG.Büro.Spots.Ein/Aus-Status",
+                    "space_path": _BUERO,
+                },
+                {
+                    "ga": "3/2/72",
+                    "name": "Beleuchtung.Gebäude.EG.Büro.Stripe.Ein/Aus-Status",
+                    "space_path": _BUERO,
+                },
+            ],
+            _KNX_FRONTIER: [{"frontier": _FRONTIER}],
+            _LAST_BEFORE: [],
+            _LAST_VALUES: [
+                *sent("3/0/15", (10, 1.0)),
+                *sent("3/2/62", (10, 0.0)),
+                *sent("3/2/72", (10, 1.0), (5, 0.0)),
+            ],
+        }
+    )
+
+    result = backtest_fault(conn, _CONSISTENCY_ENTRY, weeks=1)
+
+    (episode,) = result.episodes
+    assert episode.subject == "3/0/15"
+    # Six hours of disagreement; the first is inside the declared two.
+    assert episode.started_at == _FRONTIER - 4 * _HOUR
+    assert episode.observations == 5
+    assert episode.peak_score == pytest.approx(3.0)
+    assert episode.ended_at is None
+
+
 # --- duration --------------------------------------------------------------
 
 _APPLIANCE_ACTIVITY = "SELECT ga, bucket, on_samples, total_samples FROM knx_appliance_1h"
