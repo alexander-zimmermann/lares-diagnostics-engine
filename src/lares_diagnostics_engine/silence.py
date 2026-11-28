@@ -676,6 +676,8 @@ def plan_run(
         measured=measured,
         frontier=frontier,
         report_for=report_for,
+        group_of=main_group,
+        publish_for=GroupPublish,
     )
 
 

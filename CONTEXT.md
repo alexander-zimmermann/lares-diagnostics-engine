@@ -63,6 +63,14 @@ How a fault is measured. Every fault has exactly one:
 - **constancy** — a channel keeps sending and keeps delivering the same
   value: the producer works, the register behind it is dead. What silence
   drops as unmeasurable is what this kind reports;
+- **consistency** — a **summary** channel disagrees with the **members**
+  it stands for, for at least `min_hours`: on while every member is off,
+  or off while one is on. Which members a summary stands for is the ETS
+  building tree — every member whose `space_path` lies at or beneath the
+  summary's own space — so a room status is compared with the room's
+  lights, a floor's with every light on the floor, and the file names no
+  room. Members are always the member channels themselves, never the
+  summaries below, and a channel both roles match is a summary;
 - **duration** — a device draws current for longer than its declared
   limit;
 - **drift** — something a device does sits persistently above (or, for
@@ -98,7 +106,11 @@ exchanger, the PV plant, or the house itself. Episodes are stored per fault and 
 
 A fault's channel query, resolved where the catalog lives (`ga_catalog` in
 TSDB) — never a hand-written address list. What it resolves to is a
-**channel**: a group address, its catalog name and its DPT.
+**channel**: a group address, its catalog name and its DPT. A consistency
+fault declares none: its two roles are its query, and what they resolve
+to is a **placed channel** — a group address, its catalog name and its
+`space_path`, the ETS spaces from the top of the building tree down to the
+one its function sits in — which says which channels belong together.
 
 ## Observation
 
@@ -193,6 +205,9 @@ two channel-scoped kinds, silence and constancy, share the per-main-group
 form but not the addresses behind it — one per fault per group, because two
 writers on one address overwrite each other's clears. The address says
 which fault and roughly where, the payload names the channels exactly.
+Consistency delivers every summary of the house on one address through the
+same rule, with the whole house as its one group: the worst open summary's
+tier, re-published whenever that tier or the set of open summaries moves.
 
 ## Read cursor
 

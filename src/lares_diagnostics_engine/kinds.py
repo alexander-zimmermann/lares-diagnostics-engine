@@ -13,13 +13,14 @@ agreement.
 
 Channel silence and constancy measure per channel but report per main group
 — each on its own address there — so their declarations carry their own
-plan. A deviation fault that names an expectation runs in days rather than
-hours: the plant's whole-day yield against the kWh its named model expected
-of it. The volume watchdog runs over the engine's own episode stream.
-External faults run the loop the other way round: Basalte detects, writes
-the severity itself and delivers itself; the engine reads those writes back
-off the bus archive, records episodes marked externally delivered, and
-publishes nothing.
+plan. Consistency measures per summary and reports house-wide, on one
+address, through the same group rule. A deviation fault that names an
+expectation runs in days rather than hours: the plant's whole-day yield
+against the kWh its named model expected of it. The volume watchdog runs
+over the engine's own episode stream. External faults run the loop the
+other way round: Basalte detects, writes the severity itself and delivers
+itself; the engine reads those writes back off the bus archive, records
+episodes marked externally delivered, and publishes nothing.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from . import (
+    consistency,
     constancy,
     deviation,
     drift,
@@ -93,6 +95,21 @@ _KINDS: Mapping[MeasurementKind, Kind[Any, Any]] = {
         # Every never-sent symmetry address in the scope lands in the
         # dataless set, exactly as it does for silence, and the run record
         # already counts them. The ones actually held open are
+        # `stale_opens`.
+        warn_dataless=False,
+    ),
+    MeasurementKind.CONSISTENCY: Kind(
+        event="summary_consistency_run",
+        # Every summary of the house on one declared address: delivered as
+        # one group, so one summary's end never clears another's.
+        delivery="ga",
+        frontier=silence.frontier,
+        measure=consistency.measure,
+        plan=consistency.plan_run,
+        payload=consistency.payload,
+        # A room whose lights nobody touched for the whole window is dataless,
+        # and that is normal for a store room: the run record names them
+        # under `dataless`, and the ones actually held open are
         # `stale_opens`.
         warn_dataless=False,
     ),

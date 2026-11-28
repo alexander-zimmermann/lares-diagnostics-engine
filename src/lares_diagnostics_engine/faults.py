@@ -13,7 +13,7 @@ faults load fully but are excluded from `schedulable()`.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -34,6 +34,9 @@ class MeasurementKind(StrEnum):
     DEVIATION = "deviation"
     SILENCE = "silence"
     CONSTANCY = "constancy"
+    # A summary channel against the channels beneath it in the building
+    # tree: found through its roles, not a scope.
+    CONSISTENCY = "consistency"
     # Not measured here: Basalte detects and delivers, the engine reads the
     # severity writes back off the fault address and records episodes.
     EXTERNAL = "external"
@@ -235,6 +238,19 @@ class ExchangerRoles:
 
 
 @dataclass(frozen=True, slots=True)
+class SummaryRoles:
+    """The consistency kind's channel roles, each a catalog-name LIKE
+    pattern: the summaries — a room's, a floor's, the building's — and the
+    members a summary should equal the OR of. Which members belong to which
+    summary is not written here at all: it is the building tree the catalog
+    carries, so the file names no room.
+    """
+
+    summary: str
+    members: str
+
+
+@dataclass(frozen=True, slots=True)
 class RoomRule:
     """One room's declared rule: a unique fragment of its catalog names, the
     channel it is measured on, and the gap under the reference it may not
@@ -268,7 +284,8 @@ class Fault:
     Basalte, the scope names the address whose writes come back. A volume
     fault carries no scope: it measures the episode stream, not channels,
     and neither does a deviation fault that names an `expectation` — it
-    measures a yield against that model. `explain` is whether an episode
+    measures a yield against that model — nor a consistency fault, whose
+    roles are its catalog query. `explain` is whether an episode
     event of this fault goes on the bus for an agent to explain.
     """
 
@@ -283,7 +300,7 @@ class Fault:
     dormant: Dormant | None = None
     devices: tuple[DeviceLimit, ...] = ()
     references: tuple[DeviceReference, ...] = ()
-    roles: Roles | ExchangerRoles | None = None
+    roles: Roles | ExchangerRoles | SummaryRoles | None = None
     rooms: tuple[RoomRule, ...] = ()
     expectation: DeviationExpectation | None = None
     explain: bool = True
@@ -311,8 +328,9 @@ class Fault:
         measures channels declares one and the loader enforces it, so a
         missing scope here is a kind that measures channels and arrived
         without saying which — never an empty query, which would resolve to
-        the whole catalog. The two that measure none (the volume watchdog,
-        and a deviation fault with a named expectation) never ask.
+        the whole catalog. The ones that read no scope (the volume watchdog,
+        a deviation fault with a named expectation, and a consistency fault,
+        which queries through its roles) never ask.
         """
         if self.scope is None:
             raise ValueError(f"fault {self.name}: this kind measures channels and needs a scope")
@@ -371,7 +389,7 @@ def _checked_fault(raw: dict[str, Any], *, source: str) -> Fault:
     cannot word well enough, then frozen."""
     problem = (
         _check_external(raw)
-        or _check_volume(raw)
+        or _check_scopeless(raw)
         or _check_target(raw)
         or _check_devices(raw)
         or _check_references(raw)
@@ -425,16 +443,22 @@ def _check_external(raw: dict[str, Any]) -> str | None:
     return None
 
 
-def _check_volume(raw: dict[str, Any]) -> str | None:
-    """A volume fault measures the episode stream, so a channel scope on it
-    would be configuration nothing reads. Checked in the loader because the
-    schema's if/else error names the branch rather than the field.
+# The kinds that never read a scope, and what they read instead.
+_SCOPELESS = {
+    MeasurementKind.VOLUME: "a volume fault counts episodes, not channels",
+    MeasurementKind.CONSISTENCY: "a consistency fault finds its channels through its roles",
+}
+
+
+def _check_scopeless(raw: dict[str, Any]) -> str | None:
+    """A volume fault measures the episode stream and a consistency fault's
+    roles are its catalog query, so a channel scope on either would be
+    configuration nothing reads. Checked in the loader because the schema's
+    if/else error names the branch rather than the field.
     """
-    if raw["kind"] == MeasurementKind.VOLUME and "scope" in raw:
-        return (
-            f"fault {raw['name']!r}: scope: a volume fault counts episodes, "
-            f"not channels — it declares none"
-        )
+    reason = _SCOPELESS.get(raw["kind"])
+    if reason is not None and "scope" in raw:
+        return f"fault {raw['name']!r}: scope: {reason} — it declares none"
     return None
 
 
@@ -547,13 +571,24 @@ def _check_expectation(raw: dict[str, Any]) -> str | None:
     return None
 
 
-def _roles_owner(raw: dict[str, Any]) -> bool:
-    """Whether this fault's kind (and signal) declares channel roles at all:
-    the deviation kind's reference and gate, or the recovery signal's airs.
+type _RolesShape = Callable[[dict[str, Any]], Roles | ExchangerRoles | SummaryRoles]
+
+
+def _roles_shape(kind: str, signal: str | None) -> _RolesShape | None:
+    """The shape of the channel roles this fault's kind (and signal)
+    declares, or None where it declares none: the deviation kind's reference
+    and gate, the recovery signal's airs, the consistency kind's summaries
+    and members. The one place the owner of each shape is decided.
     """
-    return raw["kind"] == MeasurementKind.DEVIATION or (
-        raw["kind"] == MeasurementKind.DRIFT and raw.get("signal") == DriftSignal.RECOVERY
-    )
+    if kind == MeasurementKind.DEVIATION:
+        return lambda roles: Roles(reference=roles["reference"], gate=roles.get("gate"))
+    if kind == MeasurementKind.DRIFT and signal == DriftSignal.RECOVERY:
+        return lambda roles: ExchangerRoles(
+            outdoor=roles["outdoor"], extract=roles["extract"], supply=roles["supply"]
+        )
+    if kind == MeasurementKind.CONSISTENCY:
+        return lambda roles: SummaryRoles(summary=roles["summary"], members=roles["members"])
+    return None
 
 
 def _check_rooms(raw: dict[str, Any]) -> str | None:
@@ -564,10 +599,10 @@ def _check_rooms(raw: dict[str, Any]) -> str | None:
     Checked in the loader because the schema's false-subschema error loses
     the field name.
     """
-    if not _roles_owner(raw) and "roles" in raw:
+    if "roles" in raw and _roles_shape(raw["kind"], raw.get("signal")) is None:
         return (
-            f"fault {raw['name']!r}: roles: only a deviation fault or a "
-            f"recovery drift declares channel roles"
+            f"fault {raw['name']!r}: roles: only a deviation fault, a "
+            f"recovery drift or a consistency fault declares channel roles"
         )
     if raw["kind"] != MeasurementKind.DEVIATION:
         if "rooms" in raw:
@@ -616,19 +651,14 @@ def _parse_ambient(ambient: dict[str, Any] | None) -> AmbientReference | None:
 
 
 def _parse_roles(
-    roles: dict[str, Any] | None, signal: DriftSignal | None
-) -> Roles | ExchangerRoles | None:
+    roles: dict[str, Any] | None, kind: MeasurementKind, signal: DriftSignal | None
+) -> Roles | ExchangerRoles | SummaryRoles | None:
     """The declared channel roles in the shape their owner gives them — the
-    checks above already pinned roles to the deviation kind or the recovery
-    signal, so the signal alone decides which shape this is.
-    """
-    if roles is None:
+    checks above already rejected roles on a fault that owns none."""
+    shape = _roles_shape(kind, signal)
+    if roles is None or shape is None:
         return None
-    if signal is DriftSignal.RECOVERY:
-        return ExchangerRoles(
-            outdoor=roles["outdoor"], extract=roles["extract"], supply=roles["supply"]
-        )
-    return Roles(reference=roles["reference"], gate=roles.get("gate"))
+    return shape(roles)
 
 
 def _parse_target(target: dict[str, Any]) -> Target:
@@ -680,7 +710,7 @@ def _parse_fault(raw: dict[str, Any]) -> Fault:
             for match, limit in raw.get("devices", {}).items()
         ),
         references=_parse_references(raw, signal),
-        roles=_parse_roles(roles, signal),
+        roles=_parse_roles(roles, kind, signal),
         rooms=tuple(
             RoomRule(match=match, min_gap_k=rule["min_gap_k"], value=rule["value"])
             for match, rule in raw.get("rooms", {}).items()
