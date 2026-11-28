@@ -18,8 +18,8 @@ A **dormant** fault loads fully but is excluded from the schedule: it
 declares why it cannot run yet and the observable condition under which it
 starts to.
 
-A fault also declares whether it is **explained**: whether its episode
-events go on the bus for an agent to pick up. On by default for every kind
+A fault also declares **`explain`**: whether its episode events go on the
+bus for an agent to pick up. On by default for every kind
 the engine measures itself, off for `external` — Basalte detected that one
 and its own sentence already is the explanation — and overridable per
 fault with one line.
@@ -30,7 +30,8 @@ What the house is, declared in `site.yaml` beside the fault list: where
 it stands, its timezone, and its PV **planes** — each keyed by name
 (`West`, `Ost`) with the inverter it feeds, its orientation and its peak
 power in kWp. The fault list says what counts as wrong; the site says
-what is there, so a fact about the plant is never a fault parameter. The
+what is there, so a fact about the plant is never a fault parameter
+([lares ADR 0009](https://github.com/alexander-zimmermann/lares/blob/main/docs/adr/0009-site-yaml-says-what-the-house-is.md)). The
 daily-yield shape reads the plant off it: an inverter's lifetime counter
 at each hourly **close** is walked step by step, a **rise** of at most
 the plane's kWp times the hours the step spans is credited to the day,
@@ -39,6 +40,36 @@ bogus reading) is declined — the run record counts the declined steps
 per inverter as `ignored_steps`. The forecast jobs read the location,
 the planes' orientation and the timezone off it as well; nothing about
 the house lives in a job's environment.
+
+_Avoid_: plant config, environment.
+
+## Plane
+
+One roof face of the PV plant with one orientation, keyed by name
+(`West`, `Ost`) as the site declares it, feeding one inverter. A plane is
+judged against its own sky only and never compared with the other plane.
+
+_Avoid_: roof, string, array, inverter.
+
+## Module
+
+One panel with its optimizer, identified by the optimizer's serial number
+and named as the SolarEdge portal names it. A module is judged only
+against the median module of its own plane.
+
+_Avoid_: panel, optimizer.
+
+## Performance ratio
+
+The share of its satellite-derived expectation a healthy plane delivers:
+twelve declared numbers per plane, one per calendar month, calibrated once
+on a fixed healthy year and moved only by pull request — never a trailing
+window, which would adopt a standing fault as normal. They are the plane's
+references in the fault list, not a fact of the site: how much a healthy
+plane delivers is a judgement
+([lares ADR 0010](https://github.com/alexander-zimmermann/lares/blob/main/docs/adr/0010-fault-references-are-declared-never-derived.md)).
+
+_Avoid_: efficiency, yield factor; "PR" never means a pull request here.
 
 ## Fingerprint
 
@@ -89,10 +120,30 @@ How a fault is measured. Every fault has exactly one:
 its payload is shaped, how far back the data it reads reaches, and — where
 the defaults do not fit — how it folds and plans.
 
+## Reference
+
+What a fault judges a measurement against: a measured series (the
+satellite irradiance over a plane, the median module of a plane) or a
+declared number (a healthy standby, a performance ratio: the `references`
+in `faults.yaml`). Never a forecast
+([lares ADR 0008](https://github.com/alexander-zimmermann/lares/blob/main/docs/adr/0008-hindsight-faults-judge-against-a-measured-reference.md)).
+
+_Avoid_: baseline, target value.
+
+## Forecast
+
+A predicted series: forecast.solar's yield and Open-Meteo's weather, as
+the `forecast-solar` and `forecast-weather` jobs store them, behind the
+prognosis addresses and the answers given through the MCP bridge. Never a
+fault reference; a fault judges in hindsight against what was measured.
+
+_Avoid_: prediction.
+
 ## Subject
 
 The thing a fault's verdict is about: a channel, a device, a room, an
-exchanger, the PV plant, or the house itself. Episodes are stored per fault and subject.
+exchanger, a plane or a module of the PV plant, the plant itself, or the
+house. Episodes are stored per fault and subject.
 
 ## Scope
 
@@ -120,9 +171,10 @@ state.
 One of an episode's three notification events — appearing, escalating,
 ending — as it reached a row, which is what gives it an episode id and
 says it is new. Each one the write records leaves the engine as a message
-on `episode.<kind>`, for every fault declared explained: `episode_id`,
-`fault`, `subject` (the episode's own subject column — the channel, device
-or room the fault was measured on), `severity`, `kind` and `time`.
+on `episode.<kind>`, for every fault declared `explain`: `episode_id`,
+`fault`, `subject` (the episode's own subject column — the channel, device,
+room, plane or module the fault was measured on), `severity`, `kind` and
+`time`.
 `ended` goes out like the others so the stream is complete and a consumer
 filters rather than guessing what it missed.
 
@@ -175,6 +227,15 @@ open episode with a severity nobody earned. External faults are the
 exception — the bus archive has no materialization lag, so they declare
 wall-clock time.
 
+## Judged day
+
+A day both sides of a comparison know completely and whose expectation
+clears the fault's gate. A day below the gate is unjudged: it counts for
+nothing and resets nothing — never a quiet day. A plane or module without
+enough judged days in its window is dataless and holds its episode.
+
+_Avoid_: valid day, complete day, quiet day.
+
 ## Delivery
 
 How a verdict leaves the engine: one publish per moved subject on
@@ -193,6 +254,15 @@ two channel-scoped kinds, silence and constancy, share the per-main-group
 form but not the addresses behind it — one per fault per group, because two
 writers on one address overwrite each other's clears. The address says
 which fault and roughly where, the payload names the channels exactly.
+
+## Roll-up
+
+One address carrying the worst severity of a declared group, its members
+with an open episode listed worst-first in the payload: a main group over
+its channels, the plant over its planes, a plane over its modules. The
+episodes stay per member; only the address rolls up.
+
+_Avoid_: aggregate, summary, group alert.
 
 ## Read cursor
 
@@ -226,13 +296,23 @@ same publish instead of losing it behind an already-updated database. The
 episode events are the one thing published *after* it, because the row is
 what gives an event its id and what says it is new.
 
+## Verification
+
+What a fault ships with before it goes live: a fixture for each synthetic
+case and a back-test over the stored history, both reported on the fault's
+ticket.
+
+_Avoid_: validation, acceptance test.
+
 ## Back-test
 
 What a **candidate** — a fault entry nobody has written down yet, or a
-declared one with a threshold moved — would have found in the last N weeks:
-its episodes, with the subject, the dates, the tier and the peak score in
-the fault's own unit. It is the number that makes a proposed fault
-reviewable, and zero and fifty are both grounds to say no.
+declared one with a threshold or a reference moved, checked before it goes
+live — would have found in the last N weeks: its episodes, with the
+subject, the dates, the tier and the peak score in the fault's own unit. It
+is the number that makes a proposed fault reviewable, and zero and fifty
+are both grounds to say no. Each of its episodes is given a cause; only the
+unexplained ones move a threshold, never the window.
 
 The candidate runs through the same schema, the same kind, the same
 measurement and the same fold a scheduled run does, over a window of whole
@@ -242,3 +322,11 @@ sharing a declared fault's name cannot inherit its rows. A candidate has no
 history to be rare against, so its severities are the ones any rule without
 history produces; what it is judged by is the peak score. It is a library
 entry point the bridge exposes as a tool, never a job.
+
+_Avoid_: replay, simulation.
+
+## Explained episode
+
+A back-test episode whose cause is named — snow, a data gap, a real outage
+— and which therefore says nothing about the threshold. Only unexplained
+episodes move it.

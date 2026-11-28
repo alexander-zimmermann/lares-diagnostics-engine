@@ -48,8 +48,8 @@ a notification is one against what *this* weather was expected to give: the
 plant's whole-day yield against the day's forecast, both in kWh. The
 expectation is named in the fault entry and looked up in `EXPECTATIONS` —
 the computation is handed two numbers per day and never learns which model
-produced the second, so a sibling inverter or a clear-sky model is a line
-in the file and a function here, and nothing else moves.
+produced the second, so another expectation is a line in the file and a
+function here, and nothing else moves.
 
 Whole days, not hours: a cloud passing at noon is not a fault, and the
 counter arithmetic over a full day is exact where an hourly ratio is noise.
@@ -527,8 +527,8 @@ class Expectation(Protocol):
     """Where a daily-yield fault's expectation comes from: the kWh the plant
     should have produced on each day since `window_start`. The fault names
     one, `EXPECTATIONS` resolves it, and nothing downstream knows which was
-    named — a sibling inverter or a clear-sky model is another function
-    here and a different line in the fault file.
+    named — another expectation is another function here and a different
+    line in the fault file.
     """
 
     def __call__(
